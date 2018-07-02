@@ -41,28 +41,46 @@ class Seq2seq(nn.Module):
         self.decode_function = decode_function
         self.dropout = nn.Dropout(p=mid_dropout)
 
+    def reset_parameters(self):
+        self.encoder.reset_parameters()
+        self.decoder.reset_parameters()
+
     def flatten_parameters(self):
         self.encoder.rnn.flatten_parameters()
         self.decoder.rnn.flatten_parameters()
 
-    def forward(self, input_variable, input_lengths=None, target_variable=None,
-                teacher_forcing_ratio=0, mid_dropout_p=0):
+    def forward(self, input_variable,
+                input_lengths=None,
+                target_variables=None,
+                teacher_forcing_ratio=0,
+                mid_dropout_p=0):
         def _mid_droupout(x):
             if self.dropout.p != 0:
                 return self.dropout(x)
             return F.dropout(x, mid_dropout_p, self.training)
 
-        encoder_outputs, encoder_hidden = self.encoder(input_variable, input_lengths)
-        if getattr(self.encoder, "is_kqrnn", False):
-            encoder_hidden = (_mid_droupout(encoder_hidden[0]), encoder_hidden[1])  # no dropout on k2q
+        # Unpack target variables
+        try:
+            target_output = target_variables.get('decoder_output', None)
+            # The attention target is preprended with an extra SOS step. We must remove this
+            provided_attention = target_variables['attention_target'][:, 1:] if 'attention_target' in target_variables else None
+        except AttributeError:
+            target_output = None
+            provided_attention = None
+
+        encoder_outputs, encoder_hidden, additional = self.encoder(input_variable, input_lengths)
+
         elif isinstance(encoder_hidden, tuple):
             encoder_hidden = tuple(_mid_droupout(el) for el in encoder_hidden)
         else:
             encoder_hidden = _mid_droupout(encoder_hidden)
-        results = self.decoder(inputs=target_variable,
+
+        results = self.decoder(inputs=target_output,
                                encoder_hidden=encoder_hidden,
                                encoder_outputs=encoder_outputs,
                                function=self.decode_function,
                                teacher_forcing_ratio=teacher_forcing_ratio,
-                               input_lengths=input_lengths)
+                               provided_attention=provided_attention,
+                               source_lengths=input_lengths,
+                               additional=additional)
         return results

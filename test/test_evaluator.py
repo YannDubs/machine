@@ -44,6 +44,7 @@ class TestPredictor(unittest.TestCase):
         evaluator = Evaluator(batch_size=64)
         with patch('seq2seq.evaluator.evaluator.torch.stack', return_value=None), \
              patch('seq2seq.metrics.WordAccuracy.eval_batch', return_value=None), \
+             patch('seq2seq.metrics.WordAccuracy.eval_batch', return_value=None), \
              patch('seq2seq.loss.NLLLoss.eval_batch', return_value=None):
             evaluator.evaluate(self.seq2seq, self.dataset, trainer.get_batch_data)
 

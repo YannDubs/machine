@@ -1,28 +1,19 @@
-import math
-
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 
 from .baseRNN import BaseRNN
 
-from seq2seq.util.helpers import MLP
+from seq2seq.util.initialization import get_hidden0, replicate_hidden0, init_param, weights_init
+from seq2seq.util.helpers import generate_probabilities
+from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 
-
-def _compute_size(size, hidden_size, name=None):
-    if size == -1:
-        return hidden_size
-    elif 0 < size < 1:
-        return math.ceil(size * hidden_size)
-    elif 0 < size <= hidden_size:
-        return size
-    else:
-        raise ValueError("Invalid size for {} : {}".format(name, size))
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class EncoderRNN(BaseRNN):
     """
-    Applies a multi-layer RNN to an input sequence.
+    Applies a multi-layer KV-RNN to an input sequence.
 
     Args:
         vocab_size (int): size of the vocabulary
@@ -30,10 +21,10 @@ class EncoderRNN(BaseRNN):
         hidden_size (int): the number of features in the hidden state `h`
         embedding_size (int): the size of the embedding of input variables
         input_dropout_p (float, optional): dropout probability for the input sequence (default: 0)
-        dropout_p (float, optional): dropout probability for the output sequence (default: 0)
+        rnn_cell (str, optional): type of RNN cell (default: gru)
         n_layers (int, optional): number of recurrent layers (default: 1)
         bidirectional (bool, optional): if True, becomes a bidirectional encoder (default False)
-        rnn_cell (str, optional): type of RNN cell (default: gru)
+        dropout_p (float, optional): dropout probability for the output sequence (default: 0)
         variable_lengths (bool, optional): if use variable length RNN (default: False)
 
     Inputs: inputs, input_lengths
@@ -53,28 +44,66 @@ class EncoderRNN(BaseRNN):
     """
 
     def __init__(self, vocab_size, max_len, hidden_size, embedding_size,
-                 input_dropout_p=0, dropout_p=0, n_layers=1, bidirectional=False,
-                 rnn_cell='gru', variable_lengths=False, is_highway=False):
+                 input_dropout_p=0,
+                 rnn_cell='gru',
+                 n_layers=1,
+                 bidirectional=False,
+                 dropout_p=0,
+                 variable_lengths=False,
+                 key_kwargs={},
+                 value_kwargs={},
+                 is_highway=False,
+                 is_res=False,
+                 is_kv=False,
+                 is_decoupled_kv=False):
         super(EncoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p, n_layers, rnn_cell)
 
-        if is_highway and hidden_size != embedding_size:
-            raise ValueError("hidden_size should be equal embedding_size when using highway.")
-
-        self.is_highway = is_highway
         self.embedding_size = embedding_size
         self.variable_lengths = variable_lengths
+
+        # # # keeping for testing # # #
+        self.is_kv = is_kv
+        self.is_highway = is_highway
+        self.is_res = is_res
+        self.is_decoupled_kv = is_decoupled_kv
+        # # # # # # # # # # # # # # # #
+
         self.embedding = nn.Embedding(vocab_size, embedding_size)
         self.rnn = self.rnn_cell(embedding_size, hidden_size, n_layers,
                                  batch_first=True, bidirectional=bidirectional, dropout=dropout_p)
+        self.hidden0 = get_hidden0(self.rnn)
 
+        if self.is_kv:
+            self.key_generator = KeyGenerator(self.hidden_size, self.max_len, **key_kwargs)
+            self.key_size = self.key_generator.output_size
+
+            self.value_generator = ValueGenerator(self.hidden_size, **value_kwargs)
+            self.value_size = self.value_generator.output_size
+        else:
+            self.key_size = hidden_size
+            self.value_size = hidden_size
+
+        # # # keeping for testing # # #
+        if not self.is_kv and self.is_highway:
+            if self.hidden_size != self.embedding_size:
+                raise ValueError("hidden_size should be equal embedding_size when using highway.")
+            self.carry = Parameter(torch.Tensor(1.0)).to(device)
+        # # # # # # # # # # # # # # # #
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        self.apply(weights_init)
+
+        # # # keeping for testing # # #
         if self.is_highway:
-            self.carry = Parameter(torch.Tensor(1))
-            self.reset_parameters()
+            init_param(self.carry)
+        # # # # # # # # # # # # # # # #
 
-    def forward(self, input_var, input_lengths=None):
+    def forward(self, input_var, input_lengths=None, additional=None):
         """
-        Applies a multi-layer RNN to an input sequence.
+        Applies a multi-layer KV-RNN to an input sequence.
 
         Args:
             input_var (batch, seq_len): tensor containing the features of the input sequence.
@@ -85,109 +114,12 @@ class EncoderRNN(BaseRNN):
             - **output** (batch, seq_len, hidden_size): variable containing the encoded features of the input sequence
             - **hidden** (num_layers * num_directions, batch, hidden_size): variable containing the features in the hidden state h
         """
-        embedded = self.embedding(input_var)
-        embedded = self.input_dropout(embedded)
+        if additional is None:
+            additional = dict()
 
-        if self.variable_lengths:
-            if self.is_highway:
-                embedded_unpacked = embedded
-            embedded = nn.utils.rnn.pack_padded_sequence(embedded, input_lengths, batch_first=True)
+        batch_size = input_var.size(0)
+        hidden = replicate_hidden0(self.hidden0, batch_size, self.rnn.batch_first)
 
-        output, hidden = self.rnn(embedded)
-
-        if self.variable_lengths:
-            output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
-            if self.is_highway:
-                embedded = embedded_unpacked
-
-        if self.is_highway:
-            max_rate = 0.999
-            min_rate = 1 - max_rate
-            carry_rate = torch.sigmoid(self.carry) * max_rate
-            output = (1 + min_rate - carry_rate) * output + (carry_rate + min_rate) * embedded
-
-        return output, hidden
-
-    def reset_parameters(self, start_rate=0.9):
-        def logit(p):
-            return torch.log(p / (1 - p))
-
-        if self.is_highway:
-            self.carry = Parameter(logit(torch.tensor(start_rate)))
-
-
-class KVEncoderRnn(BaseRNN):
-    def __init__(self, vocab_size, max_len, hidden_size, embedding_size, n_layers=1, rnn_cell='gru',
-                 bidirectional=False, variable_lengths=False, input_dropout_p=0, dropout_p=0,
-                 key_size=-1, value_size=-1, is_highway=False, is_abscounter=False, is_relcounter=False,
-                 is_postcounter=False, is_rotcounters=False, is_contained_kv=False,
-                 is_kqrnn=False, is_res=False):
-        super(KVEncoderRnn, self).__init__(vocab_size, max_len, hidden_size,
-                                           input_dropout_p, dropout_p, n_layers, rnn_cell)
-
-        self.embedding_size = embedding_size
-        self.variable_lengths = variable_lengths
-        self.key_size = _compute_size(key_size, self.hidden_size, name="key_size")
-        self.value_size = _compute_size(value_size, self.hidden_size, name="value_size")
-        self.is_postcounter = is_postcounter
-        self.is_rotcounters = is_rotcounters
-        self.is_abscounter = is_abscounter
-        self.is_relcounter = is_relcounter
-        self.is_highway = is_highway
-        self.is_res = is_res
-        self.is_contained_kv = is_contained_kv
-        self.is_kqrnn = is_kqrnn
-
-        self.embedding = nn.Embedding(vocab_size, embedding_size)
-        self.rnn = self.rnn_cell(embedding_size, hidden_size, n_layers,
-                                 batch_first=True, bidirectional=bidirectional, dropout=dropout_p)
-
-        if self.is_contained_kv:
-            value_input_size = self.value_size
-            key_input_size = self.key_size
-        else:
-            value_input_size = key_input_size = hidden_size
-
-        min_value_generator_hidden = 32
-        self.value_generator = MLP(value_input_size, max(self.value_size, min_value_generator_hidden), self.value_size)
-
-        self.counter_size = 0
-        if self.is_abscounter:
-            self.counter_size += 1
-        if self.is_relcounter:
-            self.counter_size += 1
-        if self.is_rotcounters:
-            self.counter_size += 2
-
-        key_input_size = key_input_size + int(not self.is_postcounter) * self.counter_size
-
-        if self.is_kqrnn:
-            self.key_generator = self.rnn_cell(key_input_size, self.key_size, 1, batch_first=True)
-        else:
-            self.key_generator = MLP(key_input_size, self.key_size, self.key_size)
-
-        if self.is_highway:
-            assert value_size == 1 or value_size == -1, "Can only work with value size in {-1,1} when using highway."
-
-        abs_counter = rel_counter = rot_counters = torch.Tensor([])
-        if self.is_abscounter:
-            abs_counter = torch.arange(max_len + 1).unsqueeze(1)
-
-        if self.is_relcounter:
-            rel_counter = torch.arange(max_len + 1).unsqueeze(1) / max_len
-
-        if self.is_rotcounters:
-            angles = torch.arange(max_len + 1) / max_len * math.pi
-            rot_counters = torch.stack([torch.cos(angles), torch.sin(angles)], dim=1)
-
-        if any(c.nelement() != 0 for c in (abs_counter, rel_counter, rot_counters)):
-            self.counters = torch.cat([abs_counter, rel_counter, rot_counters], dim=1)
-            if torch.cuda.is_available():
-                self.counters = self.counters.cuda()
-        else:
-            self.counters = None
-
-    def forward(self, input_var, input_lengths=None):
         embedded = self.embedding(input_var)
         embedded = self.input_dropout(embedded)
 
@@ -195,43 +127,39 @@ class KVEncoderRnn(BaseRNN):
             embedded_unpacked = embedded
             embedded = nn.utils.rnn.pack_padded_sequence(embedded, input_lengths, batch_first=True)
 
-        output, hidden = self.rnn(embedded)
+        output, hidden = self.rnn(embedded, hidden)
 
         if self.variable_lengths:
-            output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
             embedded = embedded_unpacked
+            output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
 
-        batch, seq_len, _ = output.size()
+        if self.is_kv:
+            keys, additional = self.key_generator(output, input_lengths, additional)
+            values = self.value_generator(output, embedded)
 
-        if self.is_contained_kv:
-            key_input = output[:, :, :self.key_size]
-            value_input = output[:, :, -self.value_size:]
+        # # # keeping for testing # # #
         else:
-            key_input = value_input = output
+            keys = values = output
 
-        if self.counters is not None:
-            counters = self.counters[:seq_len, :].view(1, -1, self.counter_size).expand(batch, -1, self.counter_size)
+            if self.is_highway:
+                carry_rate = generate_probabilities(self.carry)
+                values = (1 - carry_rate) * values + (carry_rate) * embedded
 
-        if not self.is_postcounter and self.counters is not None:
-            # precounter
-            key_input = torch.cat([output, counters], dim=2)
+            if self.is_decoupled_kv:
+                if self.is_highway:
+                    raise ValueError("Cannot have both highway and decoupled KV at the same time")
 
-        if self.is_kqrnn:
-            keys, keys_hidden = self.key_generator(key_input)
-            hidden = (hidden, keys_hidden)
-        else:
-            keys = self.key_generator(key_input)
+                dim = values.size(2)
+                n_value = dim // 2
 
-        values = self.value_generator(value_input)
+                select_keys = torch.zeros(dim).to(device)
+                select_values = torch.ones(dim).to(device)
 
-        if self.is_postcounter:
-            keys = torch.cat([keys, counters], dim=2)
+                select_keys[:-n_value] = 1
+                select_values = select_values - select_keys
 
-        if self.is_highway:
-            carry_rates = torch.sigmoid(values)
-            values = (1 - carry_rates) * output + carry_rates * embedded
+                keys = output * select_keys
+                values = output * select_values
+        # # # # # # # # # # # # # # # #
 
-        if self.is_res:
-            values += embedded
-
-        return (keys, values), hidden
+        return (keys, values), hidden, additional

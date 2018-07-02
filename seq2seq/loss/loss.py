@@ -1,25 +1,23 @@
+
 from __future__ import print_function
 import math
 import torch.nn as nn
+import torch
 import numpy as np
 
 
 class Loss(object):
     """ Base class for encapsulation of the loss functions.
-
     This class defines interfaces that are commonly used with loss functions
     in training and inferencing.  For information regarding individual loss
     functions, please refer to http://pytorch.org/docs/master/nn.html#loss-functions
-
     Note:
         Do not use this class directly, use one of the sub classes.
-
     Args:
         name (str): name of the loss function used by logging messages.
         criterion (torch.nn._Loss): one of PyTorch's loss functions.  Refer
             to http://pytorch.org/docs/master/nn.html#loss-functions for
             a list of them.
-
     Attributes:
         name (str): name of the loss function used by logging messages.
         criterion (torch.nn._Loss): one of PyTorch's loss functions.  Refer
@@ -52,11 +50,9 @@ class Loss(object):
 
     def get_loss(self):
         """ Get the loss.
-
         This method defines how to calculate the averaged loss given the
         accumulated loss and the normalization term.  Override to define your
         own logic.
-
         Returns:
             loss (float): value of the loss.
         """
@@ -64,17 +60,19 @@ class Loss(object):
 
     def eval_batch(self, decoder_outputs, other, target_variable):
         """ Evaluate and accumulate loss given outputs and expected results.
-
         This method is called after each batch with the batch outputs and
         the target (expected) results.  The loss and normalization term are
         accumulated in this method.  Override it to define your own accumulation
         method.
-
         Args:
             decoder_outputs (torch.Tensor): outputs of a batch.
             other (dictionary): extra outputs of the model
             target_variable (torch.Tensor): expected output of a batch.
         """
+
+        # lists with:
+        # decoder outputs # (batch, vocab_size?)
+        # attention scores # (batch, 1, input_length)
 
         if self.inputs == 'decoder_output':
             outputs = decoder_outputs
@@ -84,13 +82,12 @@ class Loss(object):
         targets = target_variable[self.target]
 
         for step, step_output in enumerate(outputs):
-            target = targets[:, step + 1]
-            self.eval_step(step_output, target)
+            step_target = targets[:, step + 1]
+            self.eval_step(step_output, step_target)
 
     def eval_step(self, outputs, target):
         """ Function called by eval batch to evaluate a timestep of the batch.
         When called it updates self.acc_loss with the loss of the current step.
-
         Args:
             outputs (torch.Tensor): outputs of a batch.
             target (torch.Tensor): expected output of a batch.
@@ -99,6 +96,9 @@ class Loss(object):
 
     def cuda(self):
         self.criterion.cuda()
+
+    def to(self, device):
+        self.criterion.to(device)
 
     def backward(self, retain_graph=False):
         """ Backpropagate the computed loss.
@@ -115,7 +115,6 @@ class Loss(object):
 
 class NLLLoss(Loss):
     """ Batch averaged negative log-likelihood loss.
-
     Args:
         ignore_index (int, optional): index of masked token
         size_average (bool, optional): refer to http://pytorch.org/docs/master/nn.html#nllloss
@@ -153,10 +152,8 @@ class NLLLoss(Loss):
 
 class Perplexity(NLLLoss):
     """ Language model perplexity loss.
-
     Perplexity is the token averaged likelihood.  When the averaging options are the
     same, it is the exponential of negative log-likelihood.
-
     Args:
         ignore_index (int, optional): index to be masked, refer to http://pytorch.org/docs/master/nn.html#nllloss
     """
@@ -183,3 +180,23 @@ class Perplexity(NLLLoss):
             print("WARNING: Loss exceeded maximum value, capping to e^100")
             return math.exp(Perplexity._MAX_EXP)
         return math.exp(nll)
+
+
+class AttentionLoss(NLLLoss):
+    """ Cross entropy loss over attentions
+    Args:
+        ignore_index (int, optional): index of token to be masked
+    """
+    _NAME = "Attention Loss"
+    _SHORTNAME = "attn_loss"
+    _INPUTS = "attention_score"
+    _TARGETS = "attention_target"
+
+    def __init__(self, ignore_index=-1):
+        super(AttentionLoss, self).__init__(ignore_index=ignore_index, size_average=True)
+
+    def eval_step(self, step_outputs, step_target):
+        batch_size = step_target.size(0)
+        outputs = torch.log(step_outputs.contiguous().view(batch_size, -1).clamp(min=1e-20))
+        self.acc_loss += self.criterion(outputs, step_target)
+        self.norm_term += 1
