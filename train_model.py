@@ -17,9 +17,9 @@ from seq2seq.evaluator import Predictor, Evaluator
 from seq2seq.util.checkpoint import Checkpoint
 
 try:
-    raw_input          # Python 2
+  raw_input          # Python 2
 except NameError:
-    raw_input = input  # Python 3
+  raw_input = input  # Python 3
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--train', help='Training data')
@@ -55,19 +55,19 @@ parser.add_argument('--cuda_device', default=0, type=int, help='set cuda device 
 opt = parser.parse_args()
 
 if opt.resume and not opt.load_checkpoint:
-    parser.error('load_checkpoint argument is required to resume training from checkpoint')
+  parser.error('load_checkpoint argument is required to resume training from checkpoint')
 
 LOG_FORMAT = '%(asctime)s %(name)-12s %(levelname)-8s %(message)s'
 logging.basicConfig(format=LOG_FORMAT, level=getattr(logging, opt.log_level.upper()))
 logging.info(opt)
 
 if torch.cuda.is_available():
-        print("Cuda device set to %i" % opt.cuda_device)
-        torch.cuda.set_device(opt.cuda_device)
+  print("Cuda device set to %i" % opt.cuda_device)
+  torch.cuda.set_device(opt.cuda_device)
 
 if opt.attention:
-    if not opt.attention_method:
-        opt.attention_method = 'dot'
+  if not opt.attention_method:
+    opt.attention_method = 'dot'
 
 ############################################################################
 # Prepare dataset
@@ -75,8 +75,10 @@ src = SourceField()
 tgt = TargetField()
 max_len = opt.max_len
 
+
 def len_filter(example):
-    return len(example.src) <= max_len and len(example.tgt) <= max_len
+  return len(example.src) <= max_len and len(example.tgt) <= max_len
+
 
 # generate training and testing data
 train = torchtext.data.TabularDataset(
@@ -86,79 +88,80 @@ train = torchtext.data.TabularDataset(
 )
 
 if opt.dev:
-    dev = torchtext.data.TabularDataset(
-        path=opt.dev, format='tsv',
-        fields=[('src', src), ('tgt', tgt)],
-        filter_pred=len_filter
-    )
+  dev = torchtext.data.TabularDataset(
+      path=opt.dev, format='tsv',
+      fields=[('src', src), ('tgt', tgt)],
+      filter_pred=len_filter
+  )
 else:
-    dev = None
+  dev = None
 
 monitor_data = {}
 for dataset in opt.monitor:
-    m = torchtext.data.TabularDataset(
-        path=dataset, format='tsv',
-        fields=[('src', src), ('tgt', tgt)],
-        filter_pred=len_filter)
-    monitor_data[dataset] = m
+  m = torchtext.data.TabularDataset(
+      path=dataset, format='tsv',
+      fields=[('src', src), ('tgt', tgt)],
+      filter_pred=len_filter)
+  monitor_data[dataset] = m
 
 #################################################################################
 # prepare model
 
 if opt.load_checkpoint is not None:
-    logging.info("loading checkpoint from {}".format(os.path.join(opt.output_dir, opt.load_checkpoint)))
-    checkpoint_path = os.path.join(opt.output_dir, opt.load_checkpoint)
-    checkpoint = Checkpoint.load(checkpoint_path)
-    seq2seq = checkpoint.model
-    input_vocab = checkpoint.input_vocab
-    output_vocab = checkpoint.output_vocab
-    src.vocab = input_vocab
-    tgt.vocab = output_vocab
+  logging.info("loading checkpoint from {}".format(os.path.join(opt.output_dir, opt.load_checkpoint)))
+  checkpoint_path = os.path.join(opt.output_dir, opt.load_checkpoint)
+  checkpoint = Checkpoint.load(checkpoint_path)
+  seq2seq = checkpoint.model
+  input_vocab = checkpoint.input_vocab
+  output_vocab = checkpoint.output_vocab
+  src.vocab = input_vocab
+  tgt.vocab = output_vocab
 else:
-    # build vocabulary
-    src.build_vocab(train, max_size=opt.src_vocab)
-    tgt.build_vocab(train, max_size=opt.tgt_vocab)
-    input_vocab = src.vocab
-    output_vocab = tgt.vocab
+  # build vocabulary
+  src.build_vocab(train, max_size=opt.src_vocab)
+  tgt.build_vocab(train, max_size=opt.tgt_vocab)
+  input_vocab = src.vocab
+  output_vocab = tgt.vocab
 
-    # Initialize model
-    hidden_size = opt.hidden_size
-    decoder_hidden_size = hidden_size*2 if opt.bidirectional else hidden_size
-    encoder = EncoderRNN(len(src.vocab), max_len, hidden_size,
-                         opt.embedding_size,
-                         dropout_p=opt.dropout_p_encoder,
-                         n_layers=opt.n_layers,
-                         bidirectional=opt.bidirectional,
-                         rnn_cell=opt.rnn_cell,
-                         variable_lengths=True)
-    decoder = DecoderRNN(len(tgt.vocab), max_len, decoder_hidden_size,
-                         dropout_p=opt.dropout_p_decoder,
-                         n_layers=opt.n_layers,
-                         use_attention=opt.attention,
-                         attention_method=opt.attention_method,
-                         bidirectional=opt.bidirectional,
-                         rnn_cell=opt.rnn_cell,
-                         eos_id=tgt.eos_id, sos_id=tgt.sos_id)
-    seq2seq = Seq2seq(encoder, decoder)
-    if torch.cuda.is_available():
-        seq2seq.cuda()
+  # Initialize model
+  hidden_size = opt.hidden_size
+  decoder_hidden_size = hidden_size * 2 if opt.bidirectional else hidden_size
+  encoder = EncoderRNN(len(src.vocab), max_len, hidden_size,
+                       opt.embedding_size,
+                       dropout_p=opt.dropout_p_encoder,
+                       n_layers=opt.n_layers,
+                       bidirectional=opt.bidirectional,
+                       rnn_cell=opt.rnn_cell,
+                       variable_lengths=True)
+  decoder = DecoderRNN(len(tgt.vocab), max_len, decoder_hidden_size,
+                       dropout_p=opt.dropout_p_decoder,
+                       n_layers=opt.n_layers,
+                       use_attention=opt.attention,
+                       attention_method=opt.attention_method,
+                       bidirectional=opt.bidirectional,
+                       rnn_cell=opt.rnn_cell,
+                       eos_id=tgt.eos_id, sos_id=tgt.sos_id,
+                       kv_attention=kv_attention)
+  seq2seq = Seq2seq(encoder, decoder)
+  if torch.cuda.is_available():
+    seq2seq.cuda()
 
-    for param in seq2seq.parameters():
-        param.data.uniform_(-0.08, 0.08)
+  for param in seq2seq.parameters():
+    param.data.uniform_(-0.08, 0.08)
 
 input_vocabulary = input_vocab.itos
 output_vocabulary = output_vocab.itos
 
 # random.seed(3)
-# 
+#
 # print "Input vocabulary:"
 # for i, word in enumerate(input_vocabulary):
 #     print i, word
-# 
+#
 # print "Output vocabulary:"
 # for i, word in enumerate(output_vocabulary):
 #     print i, word
-# 
+#
 # raw_input()
 
 ##############################################################################
@@ -172,11 +175,11 @@ loss_weights = [1.]
 
 metrics = [WordAccuracy(ignore_index=pad), SequenceAccuracy(ignore_index=pad)]
 if torch.cuda.is_available():
-    for loss_func in loss:
-        loss_func.cuda()
+  for loss_func in loss:
+    loss_func.cuda()
 
 # create trainer
-t = SupervisedTrainer(loss=loss, metrics=metrics, 
+t = SupervisedTrainer(loss=loss, metrics=metrics,
                       loss_weights=loss_weights,
                       batch_size=opt.batch_size,
                       eval_batch_size=opt.eval_batch_size,

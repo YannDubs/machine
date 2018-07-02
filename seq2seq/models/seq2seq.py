@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class Seq2seq(nn.Module):
     """ Standard sequence-to-sequence architecture with configurable encoder
     and decoder.
@@ -33,22 +34,35 @@ class Seq2seq(nn.Module):
 
     """
 
-    def __init__(self, encoder, decoder, decode_function=F.log_softmax):
+    def __init__(self, encoder, decoder, decode_function=F.log_softmax, mid_dropout=0):
         super(Seq2seq, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.decode_function = decode_function
+        self.dropout = nn.Dropout(p=mid_dropout)
 
     def flatten_parameters(self):
         self.encoder.rnn.flatten_parameters()
         self.decoder.rnn.flatten_parameters()
 
     def forward(self, input_variable, input_lengths=None, target_variable=None,
-                teacher_forcing_ratio=0):
+                teacher_forcing_ratio=0, mid_dropout_p=0):
+        def _mid_droupout(x):
+            if self.dropout.p != 0:
+                return self.dropout(x)
+            return F.dropout(x, mid_dropout_p, self.training)
+
         encoder_outputs, encoder_hidden = self.encoder(input_variable, input_lengths)
-        result = self.decoder(inputs=target_variable,
-                              encoder_hidden=encoder_hidden,
-                              encoder_outputs=encoder_outputs,
-                              function=self.decode_function,
-                              teacher_forcing_ratio=teacher_forcing_ratio)
-        return result
+        if getattr(self.encoder, "is_kqrnn", False):
+            encoder_hidden = (_mid_droupout(encoder_hidden[0]), encoder_hidden[1])  # no dropout on k2q
+        elif isinstance(encoder_hidden, tuple):
+            encoder_hidden = tuple(_mid_droupout(el) for el in encoder_hidden)
+        else:
+            encoder_hidden = _mid_droupout(encoder_hidden)
+        results = self.decoder(inputs=target_variable,
+                               encoder_hidden=encoder_hidden,
+                               encoder_outputs=encoder_outputs,
+                               function=self.decode_function,
+                               teacher_forcing_ratio=teacher_forcing_ratio,
+                               input_lengths=input_lengths)
+        return results

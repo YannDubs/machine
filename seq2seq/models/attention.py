@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parameter import Parameter
 
 
 class Attention(nn.Module):
@@ -38,10 +39,23 @@ class Attention(nn.Module):
          >>> output, attn = attention(output, context)
 
     """
-    def __init__(self, dim, method):
+
+    def __init__(self, dim, method, is_decoupled_kv=False, kv_architecture=False, is_postcounter=False, counter_size=None,
+                 is_positioning_generator=False):
         super(Attention, self).__init__()
         self.mask = None
         self.method = self.get_method(method, dim)
+        self.is_decoupled_kv = is_decoupled_kv
+        self.kv_architecture = kv_architecture
+        self.is_postcounter = is_postcounter
+        self.counter_size = counter_size
+        self.is_positioning_generator = is_positioning_generator
+
+        if self.is_postcounter:
+            self.semantic_count_localizer = nn.Linear(2, 1)
+            self.count_localizer = nn.Linear(self.counter_size * 2, 1)
+
+        self.count = 0
 
     def set_mask(self, mask):
         """
@@ -52,23 +66,69 @@ class Attention(nn.Module):
         """
         self.mask = mask
 
-    def forward(self, decoder_states, encoder_states):
+    def forward(self, querries, encoder_states, positioners=None, location_percentage=None):
 
-        batch_size = decoder_states.size(0)
-        decoder_states_size = decoder_states.size(2)
-        input_size = encoder_states.size(1)
+        additional = dict()
 
+        batch_size = querries.size(0)
+        n_querries = querries.size(1)
+
+        if self.kv_architecture:
+            keys, values = encoder_states
+
+        elif self.is_decoupled_kv:
+            dim = encoder_states.size(2)
+            n_value = dim // 2
+
+            select_keys = torch.zeros(dim)
+            select_values = torch.ones(dim)
+
+            if torch.cuda.is_available():
+                select_keys = select_keys.cuda()
+                select_values = select_values.cuda()
+
+            select_keys[:-n_value] = 1
+            select_values = select_values - select_keys
+
+            keys = encoder_states * select_keys
+            values = encoder_states * select_values
+
+        else:
+            keys = values = encoder_states
+
+        input_size = values.size(1)
         # compute attention vals
-        attn = self.method(decoder_states, encoder_states)
+        if self.is_postcounter:
+            content_output = self.method(querries[:, :, :-self.counter_size], keys[:, :, :-self.counter_size])
+            diff = torch.stack([keys[:, :, -self.counter_size:] - querries[:, i, -self.counter_size:].unsqueeze(1)
+                                for i in range(n_querries)], dim=2)
+            diff = diff.view(batch_size, input_size, n_querries, self.counter_size)
+
+            count_input = torch.cat((diff**2, diff), dim=3)
+            count_output = self.count_localizer(count_input).squeeze(-1)
+            content_output = content_output.view(batch_size, input_size, n_querries)
+            localizer_input = F.relu(torch.stack((content_output, count_output), dim=-1))
+            attn = self.semantic_count_localizer(localizer_input).squeeze(-1)
+        else:
+            attn = self.method(querries, keys)
 
         if self.mask is not None:
             attn.data.masked_fill_(self.mask, -float('inf'))
+
         attn = F.softmax(attn.view(-1, input_size), dim=1).view(batch_size, -1, input_size)
 
-        # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
-        context = torch.bmm(attn, encoder_states)
+        if self.is_positioning_generator:
+            positioners = positioners[:, :input_size, :].transpose(1, 2)
+            positioners = F.normalize(positioners, p=1, dim=-1)
+            additional["positional_attention"] = positioners
+            additional["content_attention"] = attn
+            additional["location_percentage"] = location_percentage
+            attn = positioners * location_percentage + (1 - location_percentage) * attn
 
-        return context, attn
+        # (batch, out_len, in_len) * (batch, in_len, dim) -> (batch, out_len, dim)
+        context = torch.bmm(attn, values)
+
+        return context, attn, additional
 
     def get_method(self, method, dim):
         """
@@ -82,15 +142,17 @@ class Attention(nn.Module):
             return ValueError("Unknown attention method")
         return method
 
+
 class Concat(nn.Module):
     """
     Implements the computation of attention by applying an
     MLP to the concatenation of the decoder and encoder
     hidden states.
     """
+
     def __init__(self, dim):
         super(Concat, self).__init__()
-        self.mlp = nn.Linear(dim*2, 1)
+        self.mlp = nn.Linear(dim * 2, 1)
 
     def forward(self, decoder_states, encoder_states):
         # apply mlp to all encoder states for current decoder

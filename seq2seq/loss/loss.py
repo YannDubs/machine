@@ -3,6 +3,7 @@ import math
 import torch.nn as nn
 import numpy as np
 
+
 class Loss(object):
     """ Base class for encapsulation of the loss functions.
 
@@ -109,7 +110,8 @@ class Loss(object):
     def scale_loss(self, factor):
         """ Scale loss with a factor
         """
-        self.acc_loss*=factor
+        self.acc_loss *= factor
+
 
 class NLLLoss(Loss):
     """ Batch averaged negative log-likelihood loss.
@@ -124,13 +126,13 @@ class NLLLoss(Loss):
     _INPUTS = "decoder_output"
     _TARGETS = "decoder_output"
 
-    def __init__(self, ignore_index=-1, size_average=True):
+    def __init__(self, ignore_index=-1, size_average=True, **kwargs):
         self.ignore_index = ignore_index
         self.size_average = size_average
 
         super(NLLLoss, self).__init__(
             self._NAME, self._SHORTNAME, self._INPUTS, self._TARGETS,
-            nn.NLLLoss(ignore_index=ignore_index, size_average=size_average))
+            nn.NLLLoss(ignore_index=ignore_index, size_average=size_average, **kwargs))
 
     def get_loss(self):
         if isinstance(self.acc_loss, int):
@@ -147,6 +149,7 @@ class NLLLoss(Loss):
         outputs = step_outputs.contiguous().view(batch_size, -1)
         self.acc_loss += self.criterion(outputs, target)
         self.norm_term += 1
+
 
 class Perplexity(NLLLoss):
     """ Language model perplexity loss.

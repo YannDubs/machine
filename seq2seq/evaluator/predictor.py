@@ -1,5 +1,6 @@
 import torch
 
+
 class Predictor(object):
 
     def __init__(self, model, src_vocab, tgt_vocab):
@@ -18,7 +19,6 @@ class Predictor(object):
         self.model.eval()
         self.src_vocab = src_vocab
         self.tgt_vocab = tgt_vocab
-
 
     def predict(self, src_seq):
         """ Make prediction given `src_seq` as input.
@@ -39,4 +39,4 @@ class Predictor(object):
 
         tgt_id_seq = [other['sequence'][di][0].data[0] for di in range(length)]
         tgt_seq = [self.tgt_vocab.itos[tok] for tok in tgt_id_seq]
-        return tgt_seq
+        return tgt_seq, other
