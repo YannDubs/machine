@@ -80,7 +80,7 @@ class AttentionField(torchtext.data.Field):
     Since we already define the attention vectors with integers in the data set, we don't need a vocabulary. Instead, we directly use the provided integers
     """
 
-    def __init__(self, ignore_index, **kwargs):
+    def __init__(self, ignore_index=-1, **kwargs):
         """
         Initialize the AttentionField. As pre-processing it prepends the ignore value, to account for the SOS step
 

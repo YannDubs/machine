@@ -1,9 +1,15 @@
+import sys
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
 
-import sys
+from torch.nn import RNNBase
+
 from seq2seq.util.initialization import linear_init
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def check_import(module, to_use=None):
@@ -37,7 +43,7 @@ class MLP(nn.Module):
         activation (function, optional): activation function
     """
 
-    def __init__(self, input_size, hidden_size, output_size, activation=nn.LeakyReLU):
+    def __init__(self, input_size, hidden_size, output_size, activation=nn.ReLU):
         super(MLP, self).__init__()
         self.mlp = nn.Linear(input_size, hidden_size)
         self.activation = activation()  # cannot be a function from Functional but class
@@ -71,3 +77,27 @@ def generate_probabilities(x, min_p=0, activation="sigmoid", temperature=1, bias
 
 def get_kwargs(**kwargs):
     return kwargs
+
+
+def get_rnn_cell(rnn_name):
+    if rnn_name.lower() == 'lstm':
+        return nn.LSTM
+    elif rnn_name.lower() == 'gru':
+        return nn.GRU
+    else:
+        raise ValueError("Unsupported RNN Cell: {0}".format(rnn_name))
+
+
+class GaussianNoise(nn.Module):
+    def __init__(self, sigma=0.5):
+        super().__init__()
+        self.sigma = sigma
+
+    def forward(self, x):
+        if self.training and self.sigma != 0:
+            # uses required_grad=False because don't want to biais the network to generate vectors
+            # with smaller median, but still want the noise to be proportional to the norm
+            sampled_noise = torch.randn_like(x) * self.sigma * Variable(x, requires_grad=False)
+            sampled_noise.to(device)
+            x = x + sampled_noise
+        return x

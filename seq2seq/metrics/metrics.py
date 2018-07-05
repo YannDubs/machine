@@ -1,8 +1,36 @@
-from __future__ import print_function
-import math
 import torch
-import torch.nn as nn
-import numpy as np
+
+
+def _get_metric(metric_name, src, tgt, is_predict_eos):
+    output_pad = tgt.vocab.stoi[tgt.pad_token]
+    metric_name = metric_name.lower()
+    if metric_name == "word accuracy":
+        return WordAccuracy(ignore_index=output_pad)
+    elif metric_name == "sequence accuracy":
+        return SequenceAccuracy(ignore_index=output_pad)
+    elif metric_name == "final target accuracy":
+        return FinalTargetAccuracy(ignore_index=output_pad, eos_id=tgt.eos_id)
+    elif metric_name == "symbol rewriting accuracy":
+        input_pad_symbol = src.pad_token
+        output_pad_symbol = tgt.pad_token
+        output_sos_symbol = tgt.SYM_SOS
+        output_eos_symbol = tgt.SYM_EOS
+        output_unk_symbol = tgt.unk_token
+        return SymbolRewritingAccuracy(src.vocab,
+                                       tgt.vocab,
+                                       is_predict_eos,
+                                       input_pad_symbol,
+                                       output_sos_symbol,
+                                       output_pad_symbol,
+                                       output_eos_symbol,
+                                       output_unk_symbol)
+    else:
+        raise ValueError("Unkown metric : {}".format(metric_name))
+
+
+def get_metrics(metric_names, src, tgt, is_predict_eos):
+    metrics = [_get_metric(metric_name, src, tgt, is_predict_eos) for metric_name in metric_names]
+    return metrics
 
 
 class Metric(object):
@@ -85,7 +113,6 @@ class WordAccuracy(Metric):
     def eval_batch(self, outputs, targets):
         # evaluate batch
         targets = targets['decoder_output']
-        batch_size = targets.size(0)
 
         for step, step_output in enumerate(outputs):
             target = targets[:, step + 1]
@@ -331,14 +358,15 @@ class SymbolRewritingAccuracy(Metric):
 
             # Convert indices to strings
             # Remove all padding from the grammar.
-            grammar = [self.input_vocab.itos[token] for token in grammar if token !=
-                       self.input_vocab.itos[token] != self.input_pad_symbol]
+            grammar = [self.input_vocab.itos[token] for token in grammar if
+                       self.input_vocab.itos[token] not in [token, self.input_pad_symbol, "."]]
             prediction = [self.output_vocab.itos[token] for token in prediction]
 
             # Each input symbol has to produce exactly three outputs
             required_output_length = 3 * len(grammar)
 
             # The first prediction after the actual output should be EOS
+            print(prediction, required_output_length, len(prediction))
             if self.use_output_eos and prediction[required_output_length] != self.output_eos_symbol:
                 continue
 

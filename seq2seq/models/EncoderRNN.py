@@ -59,6 +59,7 @@ class EncoderRNN(BaseRNN):
         super(EncoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p, n_layers, rnn_cell)
 
+        self.bidirectional_hidden_size = self.hidden_size * 2 if bidirectional else self.hidden_size
         self.embedding_size = embedding_size
         self.variable_lengths = variable_lengths
 
@@ -70,25 +71,25 @@ class EncoderRNN(BaseRNN):
         # # # # # # # # # # # # # # # #
 
         self.embedding = nn.Embedding(vocab_size, embedding_size)
-        self.rnn = self.rnn_cell(embedding_size, hidden_size, n_layers,
-                                 batch_first=True, bidirectional=bidirectional, dropout=dropout_p)
-        self.hidden0 = get_hidden0(self.rnn)
+        self.controller = self.rnn_cell(self.embedding_size, self.hidden_size, self.n_layers,
+                                        batch_first=True, bidirectional=bidirectional, dropout=dropout_p)
+        self.hidden0 = get_hidden0(self.controller)
 
         if self.is_kv:
-            self.key_generator = KeyGenerator(self.hidden_size, self.max_len, **key_kwargs)
+            self.key_generator = KeyGenerator(self.bidirectional_hidden_size, self.max_len, **key_kwargs)
             self.key_size = self.key_generator.output_size
 
-            self.value_generator = ValueGenerator(self.hidden_size, **value_kwargs)
+            self.value_generator = ValueGenerator(self.bidirectional_hidden_size, **value_kwargs)
             self.value_size = self.value_generator.output_size
         else:
-            self.key_size = hidden_size
-            self.value_size = hidden_size
+            self.key_size = self.bidirectional_hidden_size
+            self.value_size = self.bidirectional_hidden_size
 
         # # # keeping for testing # # #
         if not self.is_kv and self.is_highway:
-            if self.hidden_size != self.embedding_size:
+            if self.bidirectional_hidden_size != self.embedding_size:
                 raise ValueError("hidden_size should be equal embedding_size when using highway.")
-            self.carry = Parameter(torch.Tensor(1.0)).to(device)
+            self.carry = Parameter(torch.tensor(1.0)).to(device)
         # # # # # # # # # # # # # # # #
 
         self.reset_parameters()
@@ -97,9 +98,15 @@ class EncoderRNN(BaseRNN):
         self.apply(weights_init)
 
         # # # keeping for testing # # #
-        if self.is_highway:
+        if self.is_highway and not self.is_kv:
             init_param(self.carry)
         # # # # # # # # # # # # # # # #
+
+    def flatten_parameters(self):
+        self.controller.flatten_parameters()
+
+        if self.is_kv:
+            self.key_generator.flatten_parameters()
 
     def forward(self, input_var, input_lengths=None, additional=None):
         """
@@ -118,7 +125,7 @@ class EncoderRNN(BaseRNN):
             additional = dict()
 
         batch_size = input_var.size(0)
-        hidden = replicate_hidden0(self.hidden0, batch_size, self.rnn.batch_first)
+        hidden = replicate_hidden0(self.hidden0, batch_size)
 
         embedded = self.embedding(input_var)
         embedded = self.input_dropout(embedded)
@@ -127,7 +134,7 @@ class EncoderRNN(BaseRNN):
             embedded_unpacked = embedded
             embedded = nn.utils.rnn.pack_padded_sequence(embedded, input_lengths, batch_first=True)
 
-        output, hidden = self.rnn(embedded, hidden)
+        output, hidden = self.controller(embedded, hidden)
 
         if self.variable_lengths:
             embedded = embedded_unpacked
@@ -161,5 +168,6 @@ class EncoderRNN(BaseRNN):
                 keys = output * select_keys
                 values = output * select_values
         # # # # # # # # # # # # # # # #
+        additional["last_enc_controller_out"] = output[:, -1:, :]
 
         return (keys, values), hidden, additional

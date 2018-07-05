@@ -1,6 +1,8 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+from seq2seq.util.helpers import GaussianNoise
+
 
 class Seq2seq(nn.Module):
     """ Standard sequence-to-sequence architecture with configurable encoder
@@ -34,20 +36,21 @@ class Seq2seq(nn.Module):
 
     """
 
-    def __init__(self, encoder, decoder, decode_function=F.log_softmax, mid_dropout=0):
+    def __init__(self, encoder, decoder, decode_function=F.log_softmax, mid_dropout=0, mid_noise_sigma=0):
         super(Seq2seq, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.decode_function = decode_function
         self.dropout = nn.Dropout(p=mid_dropout)
+        self.noise = GaussianNoise(mid_noise_sigma)
 
     def reset_parameters(self):
         self.encoder.reset_parameters()
         self.decoder.reset_parameters()
 
     def flatten_parameters(self):
-        self.encoder.rnn.flatten_parameters()
-        self.decoder.rnn.flatten_parameters()
+        self.encoder.flatten_parameters()
+        self.decoder.flatten_parameters()
 
     def forward(self, input_variable,
                 input_lengths=None,
@@ -70,9 +73,11 @@ class Seq2seq(nn.Module):
 
         encoder_outputs, encoder_hidden, additional = self.encoder(input_variable, input_lengths)
 
-        elif isinstance(encoder_hidden, tuple):
+        if isinstance(encoder_hidden, tuple):
+            encoder_hidden = tuple(self.noise(el) for el in encoder_hidden)
             encoder_hidden = tuple(_mid_droupout(el) for el in encoder_hidden)
         else:
+            encoder_hidden = self.noise(encoder_hidden)
             encoder_hidden = _mid_droupout(encoder_hidden)
 
         results = self.decoder(inputs=target_output,
@@ -83,4 +88,5 @@ class Seq2seq(nn.Module):
                                provided_attention=provided_attention,
                                source_lengths=input_lengths,
                                additional=additional)
+
         return results

@@ -48,21 +48,20 @@ class ContentAttention(nn.Module):
     def __init__(self, dim, method, post_counter_size=None):
 
         super(ContentAttention, self).__init__()
+        # # # keeping for testing # # #
+        self.is_postcounter = post_counter_size is not None
+        if self.is_postcounter:
+            self.counter_size = post_counter_size
+            self.context_count_mixer = MLP(2, 2, 1)
+            self.count_localizer = MLP(self.counter_size * 2, self.counter_size * 2, 1)
+            dim -= self.counter_size
+        # # # # # # # # # # # # # # # #
+
         self.mask = None
         self.method = self.get_method(method, dim)
 
         self.confidence_temperature = Parameter(torch.tensor(1.0)).to(device)
         self.confidence_bias = Parameter(torch.tensor(0.0)).to(device)
-
-        # # # keeping for testing # # #
-        if post_counter_size is not None:
-            self.is_postcounter = True
-            self.counter_size = post_counter_size
-
-        if self.is_postcounter:
-            self.semantic_count_localizer = MLP(2, 2, 1)
-            self.count_localizer = MLP(self.counter_size * 2, self.counter_size * 2, 1)
-        # # # # # # # # # # # # # # # #
 
         self.reset_parameters()
 
@@ -82,22 +81,21 @@ class ContentAttention(nn.Module):
         batch_size, n_queries, kq_size = queries.size()
         n_keys = keys.size(1)
 
-        # compute mask
         mask = keys.eq(0.)[:, :, :1].transpose(1, 2)
 
         # Compute attention vals
         if self.is_postcounter:
             content_output = self.method(queries[:, :, :-self.counter_size], keys[:, :, :-self.counter_size])
-            content_output = content_output.view(batch_size, n_keys, n_queries)
 
+            #(batch_size, n_queries, n_keys, counter_size)
             diff = torch.stack([keys[:, :, -self.counter_size:] - queries[:, i, -self.counter_size:].unsqueeze(1)
-                                for i in range(n_queries)], dim=2)
-            diff = diff.view(batch_size, n_keys, n_queries, self.counter_size)
+                                for i in range(n_queries)], dim=1)
+
             count_input = torch.cat((diff**2, diff), dim=3)
             count_output = self.count_localizer(count_input).squeeze(-1)
 
             localizer_input = torch.stack((content_output, count_output), dim=-1)
-            logits = self.semantic_count_localizer(localizer_input).squeeze(-1)
+            logits = self.context_count_mixer(localizer_input).squeeze(-1)
         else:
             logits = self.method(queries, keys, **attention_method_kwargs)
 
@@ -108,6 +106,7 @@ class ContentAttention(nn.Module):
         logits.masked_fill_(mask, -float('inf'))
 
         confidence = generate_probabilities(logits, temperature=self.confidence_temperature, bias=self.confidence_bias)
+        confidence = confidence.mean(dim=-1)
 
         attn = F.softmax(logits.view(-1, n_keys), dim=1).view(batch_size, -1, n_keys)
 
@@ -191,7 +190,7 @@ class Dot(nn.Module):
 class MLPAttn(nn.Module):
 
     def __init__(self, dim):
-        super(MLP, self).__init__()
+        super(MLPAttn, self).__init__()
         self.mlp = nn.Linear(dim * 2, dim)
         self.activation = nn.ReLU()
         self.out = nn.Linear(dim, 1)

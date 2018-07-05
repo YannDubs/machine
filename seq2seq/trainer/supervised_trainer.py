@@ -288,7 +288,8 @@ class SupervisedTrainer(object):
               learning_rate=0.001,
               checkpoint_path=None,
               top_k=5,
-              is_plot=False):
+              is_plot=False,
+              optimizer_kwargs={}):
         """ Run training for a given model.
 
         Args:
@@ -318,7 +319,7 @@ class SupervisedTrainer(object):
             defaults = resume_optim.param_groups[0]
             defaults.pop('params', None)
             defaults.pop('initial_lr', None)
-            self.optimizer.optimizer = resume_optim.__class__(model.parameters(), **defaults)
+            self.optimizer.optimizer = resume_optim.__class__(model.parameters(), **defaults, **optimizer_kwargs)
 
             start_epoch = resume_checkpoint.epoch
             step = resume_checkpoint.step
@@ -333,7 +334,7 @@ class SupervisedTrainer(object):
                           None: optim.Adam}
                 return optims[optim_name]
 
-            self.optimizer = Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate),
+            self.optimizer = Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate, **optimizer_kwargs),
                                        max_grad_norm=5)
 
         self.history = History(num_epochs)
@@ -345,7 +346,7 @@ class SupervisedTrainer(object):
                                    monitor_data=monitor_data,
                                    teacher_forcing_ratio=teacher_forcing_ratio,
                                    top_k=top_k)
-        return model, self.history
+        return model, logs, self.history
 
     @staticmethod
     def get_batch_data(batch):

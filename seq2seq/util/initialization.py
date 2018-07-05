@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 
-from seq2seq.util.helpers import MLP
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -45,6 +43,7 @@ def init_param(param, activation=None, is_positive=False, bound=0.05):  # defaul
 
 def linear_init(layer, activation=None):
     """Initializes a linear layer."""
+
     x = layer.weight
 
     if activation is None:
@@ -69,7 +68,7 @@ def init_basernn(cell):
     for ih, hh, _, _ in cell.all_weights:
         # loops over all wight matrix even though concatenated in single matrix
         for i in range(0, hh.size(0), cell.hidden_size):
-            linear_init(ih[i:i + cell.hidden_size], activation="sigmoid")
+            nn.init.xavier_uniform_(ih[i:i + cell.hidden_size])
             nn.init.orthogonal_(hh[i:i + cell.hidden_size])
 
 
@@ -97,33 +96,34 @@ def init_lstm(cell):
 
 def get_hidden0(rnn):
     """Returns a initial state of the hidden actiavtion of a RNN."""
-    def transpose_batch(x):
-        if rnn.batch_first:
-            return x.transpose(0, 1)
-        return x
 
-    n_stacked = rnn.num_layers * int(rnn.bidirectional) * 2
+    n_stacked = rnn.num_layers
+    if rnn.bidirectional:
+        n_stacked *= 2
 
     hidden = Parameter(torch.randn(n_stacked, 1, rnn.hidden_size)).to(device)
     init_param(hidden, activation="sigmoid")
 
-    if rnn == 'LSTM':
-        return (hidden,
-                init_param(hidden.clone(), activation="tanh"))
+    if isinstance(rnn, nn.LSTM):
+        cell = init_param(hidden.clone(), activation="tanh")
+        return (hidden, cell)
     else:
         return hidden
 
 
-def replicate_hidden0(hidden, batch_size, batch_first):
+def replicate_hidden0(hidden, batch_size):
     """Replicates the initial hidden state for batch work."""
-    if batch_first:
-        return hidden.expand(batch_size, 1, 1)
 
-    return hidden.expand(1, batch_size, 1)
+    # Note : hidden is not transposed even when using batch_first
+    if isinstance(hidden, tuple):
+        return replicate_hidden0(hidden[0], batch_size), replicate_hidden0(hidden[1], batch_size)
+
+    return hidden.expand(hidden.size(0), batch_size, hidden.size(2))
 
 
 def weights_init(module):
     """Initializes the weights of a module."""
+    from seq2seq.util.helpers import MLP  # bad but necessary for circular imports
     if isinstance(module, MLP):
         module.reset_parameters()
     if isinstance(module, nn.Embedding):

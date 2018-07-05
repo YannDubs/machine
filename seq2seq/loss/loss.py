@@ -6,6 +6,48 @@ import torch
 import numpy as np
 
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _get_loss(loss_name, token_loss_weight, tgt):
+    loss_weight = 1.0
+    if isinstance(loss_name, tuple):
+        loss_name, loss_weight = loss_name
+
+    output_pad = tgt.vocab.stoi[tgt.pad_token]
+    loss_name = loss_name.lower()
+    if loss_name == "nll":
+        return NLLLoss(ignore_index=output_pad, weight=token_loss_weight), loss_weight
+    elif loss_name == "perplexity":
+        return Perplexity(ignore_index=output_pad, weight=token_loss_weight), loss_weight
+    elif loss_name == "attention loss":
+        return AttentionLoss(ignore_index=output_pad, weight=token_loss_weight), loss_weight
+    else:
+        raise ValueError("Unkown loss : {}".format(loss_name))
+
+
+def get_losses(loss_names, tgt, is_predict_eos, eos_weight=None):
+    """loss_names is a list where each element is either the name of the loss or a tuple
+    of (loss_name, loss_weight)."""
+    if is_predict_eos:
+        token_loss_weight = torch.ones(len(tgt.vocab.stoi))
+        if eos_weight is not None:
+            token_loss_weight[tgt.eos_id] = eos_weight
+        token_loss_weight.to(device)
+    else:
+        token_loss_weight = None
+
+    losses = []
+    loss_weights = []
+    for loss_name in loss_names:
+        loss, loss_weight = _get_loss(loss_name, token_loss_weight, tgt)
+        loss.to(device)
+        losses.append(loss)
+        loss_weights.append(loss_weight)
+
+    return losses, loss_weights
+
+
 class Loss(object):
     """ Base class for encapsulation of the loss functions.
     This class defines interfaces that are commonly used with loss functions
@@ -163,8 +205,8 @@ class Perplexity(NLLLoss):
     _MAX_EXP = 100
     _INPUTS = "decoder_output"
 
-    def __init__(self, ignore_index=-100):
-        super(Perplexity, self).__init__(ignore_index=ignore_index, size_average=False)
+    def __init__(self, ignore_index=-100, **kwargs):
+        super(Perplexity, self).__init__(ignore_index=ignore_index, size_average=False, **kwargs)
 
     def eval_step(self, outputs, target):
         self.acc_loss += self.criterion(outputs, target)
@@ -192,8 +234,8 @@ class AttentionLoss(NLLLoss):
     _INPUTS = "attention_score"
     _TARGETS = "attention_target"
 
-    def __init__(self, ignore_index=-1):
-        super(AttentionLoss, self).__init__(ignore_index=ignore_index, size_average=True)
+    def __init__(self, ignore_index=-1, **kwargs):
+        super(AttentionLoss, self).__init__(ignore_index=ignore_index, size_average=True, **kwargs)
 
     def eval_step(self, step_outputs, step_target):
         batch_size = step_target.size(0)

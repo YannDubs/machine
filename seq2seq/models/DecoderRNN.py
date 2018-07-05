@@ -1,4 +1,3 @@
-import math
 import random
 
 import numpy as np
@@ -7,10 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .attention import Attention, HardGuidance
+from .attention import ContentAttention, HardGuidance
 from .baseRNN import BaseRNN
 
 from seq2seq.util.helpers import renormalize_input_length
+from seq2seq.util.initialization import weights_init
+from seq2seq.models.KVQ import QueryGenerator
+from seq2seq.models.Positioner import AttentionMixer, PositionAttention
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -74,11 +77,13 @@ class DecoderRNN(BaseRNN):
                  use_attention=False,
                  attention_method=None,
                  is_full_focus=False,
+                 is_transform_controller=False,
                  value_size=None,
                  is_positioner=False,
-                 query_size=None,
+                 is_query=False,
                  pag_kwargs={},
-                 query_kwargs={}):
+                 query_kwargs={},
+                 attmix_kwargs={}):
 
         super(DecoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p,
@@ -96,23 +101,33 @@ class DecoderRNN(BaseRNN):
         self.attention_method = attention_method
         self.is_full_focus = is_full_focus
 
+        self.is_transform_controller = is_transform_controller
         self.value_size = value_size
         self.is_positioner = is_positioner
 
         # increase input size decoder if attention is applied before decoder rnn
         input_rnn_size = self.embedding_size
         input_prediction_size = self.hidden_size
-        if use_attention == 'pre-rnn' and not is_full_focus:
-            input_rnn_size += self.value_size
-        elif use_attention == 'post-rnn' and not is_full_focus:
-            input_prediction_size += self.value_size
+        if self.use_attention == 'pre-rnn':
+            if is_full_focus:
+                input_rnn_size = self.value_size
+            else:
+                input_rnn_size += self.value_size
+        elif self.use_attention == 'post-rnn':
+            if is_full_focus:
+                input_prediction_size = self.value_size
+            else:
+                input_prediction_size += self.value_size
 
         self.embedding = nn.Embedding(self.output_size, self.embedding_size)
-        self.rnn = self.rnn_cell(input_rnn_size, self.hidden_size, self.n_layers, batch_first=True, dropout=self.dropout_p)
+        self.controller = self.rnn_cell(input_rnn_size, self.hidden_size, self.n_layers, batch_first=True, dropout=self.dropout_p)
+
+        if self.use_attention == "pre-rnn" and self.is_transform_controller:
+            self.transform_controller = nn.Linear(self.hidden_size, self.hidden_size)
 
         post_counter_size = None
-        if query_size is not None:
-            self.query_generator = QueryGenerator(self.hidden_size, query_size=query_size, self.max_len, **query_kwargs)
+        if is_query:
+            self.query_generator = QueryGenerator(self.hidden_size, self.max_len, **query_kwargs)
             self.query_size = self.query_generator.output_size
 
             # # # keeping for testing # # #
@@ -120,23 +135,23 @@ class DecoderRNN(BaseRNN):
                 post_counter_size = self.query_generator.counter_size
             # # # # # # # # # # # # # # # #
         else:
+            self.query_generator = None
             self.query_size = self.hidden_size
 
         if self.use_attention:
             self.content_attention = ContentAttention(self.query_size, self.attention_method, post_counter_size=post_counter_size)
         else:
-            self.attention = None
+            self.content_attention = None
 
         if self.is_positioner:
-            self.position_attention = PositionAttention(self.hidden_size,
-                                                        **pag_kwargs)
-            self.mix_attention = AttentionMixer(self.hidden_size)
+            self.position_attention = PositionAttention(self.hidden_size, self.max_len, **pag_kwargs)
+            self.mix_attention = AttentionMixer(self.hidden_size, **attmix_kwargs)
 
         if self.is_full_focus:
-            if use_attention == 'pre-rnn':
-                self.ffocus_merge = nn.Linear(input_rnn_size + self.value_size, input_rnn_size)
-            elif use_attention == 'post-rnn':
-                self.ffocus_merge = nn.Linear(input_prediction_size + self.value_size, input_prediction_size)
+            if self.use_attention == 'pre-rnn':
+                self.ffocus_merge = nn.Linear(self.embedding_size + self.value_size, input_rnn_size)
+            elif self.use_attention == 'post-rnn':
+                self.ffocus_merge = nn.Linear(self.hidden_size + self.value_size, input_prediction_size)
 
         self.out = nn.Linear(input_prediction_size, self.output_size)
 
@@ -144,6 +159,15 @@ class DecoderRNN(BaseRNN):
 
     def reset_parameters(self):
         self.apply(weights_init)
+
+    def flatten_parameters(self):
+        self.controller.flatten_parameters()
+
+        if self.is_positioner:
+            self.position_attention.flatten_parameters()
+
+        if self.query_generator is not None:
+            self.query_generator.flatten_parameters()
 
     def forward(self,
                 inputs=None,
@@ -192,11 +216,13 @@ class DecoderRNN(BaseRNN):
         decoder_outputs = []
         sequence_symbols = []
         lengths = np.array([max_length] * batch_size)
-        decoder_output = None
+        controller_output = additional["last_enc_controller_out"] if self.use_attention == 'pre-rnn' else None
+        if self.use_attention == 'pre-rnn' and self.is_transform_controller:
+            controller_output = self.transform_controller(controller_output)
 
         # Prepare extra arguments for attention method
         attention_method_kwargs = {}
-        if self.attention and isinstance(self.attention.method, HardGuidance):
+        if self.content_attention and isinstance(self.content_attention.method, HardGuidance):
             attention_method_kwargs['provided_attention'] = provided_attention
 
         # When we use pre-rnn attention we must unroll the decoder. We need to calculate the attention based on
@@ -220,17 +246,18 @@ class DecoderRNN(BaseRNN):
                     decoder_input = symbols
 
                 # Perform one forward step
-                if self.attention and isinstance(self.attention.method, HardGuidance):
+                if self.content_attention and isinstance(self.content_attention.method, HardGuidance):
                     attention_method_kwargs['step'] = di
-                decoder_output, decoder_hidden, step_attn, additional = self.forward_step(decoder_input,
-                                                                                          decoder_hidden,
-                                                                                          encoder_outputs,
-                                                                                          function,
-                                                                                          decoder_output,
-                                                                                          di,
-                                                                                          additional=additional,
-                                                                                          source_lengths=source_lengths,
-                                                                                          **attention_method_kwargs)
+                decoder_output, decoder_hidden, step_attn, controller_output, additional = self.forward_step(decoder_input,
+                                                                                                             decoder_hidden,
+                                                                                                             encoder_outputs,
+                                                                                                             function,
+                                                                                                             controller_output,
+                                                                                                             di,
+                                                                                                             additional=additional,
+                                                                                                             source_lengths=source_lengths,
+                                                                                                             attention_method_kwargs=attention_method_kwargs)
+
                 # Remove the unnecessary dimension.
                 step_output = decoder_output.squeeze(1)
                 # Get the actual symbol
@@ -242,17 +269,17 @@ class DecoderRNN(BaseRNN):
             decoder_input = inputs[:, :-1]
 
             # Forward step without unrolling
-            if self.attention and isinstance(self.attention.method, HardGuidance):
+            if self.content_attention and isinstance(self.content_attention.method, HardGuidance):
                 attention_method_kwargs['step'] = -1
-            decoder_output, decoder_hidden, attn, additional = self.forward_step(decoder_input,
-                                                                                 decoder_hidden,
-                                                                                 encoder_outputs,
-                                                                                 function,
-                                                                                 decoder_output,
-                                                                                 0,
-                                                                                 additional=additional,
-                                                                                 source_lengths=source_lengths,
-                                                                                 **attention_method_kwargs)
+            decoder_output, decoder_hidden, attn, controller_output, additional = self.forward_step(decoder_input,
+                                                                                                    decoder_hidden,
+                                                                                                    encoder_outputs,
+                                                                                                    function,
+                                                                                                    controller_output,
+                                                                                                    0,
+                                                                                                    additional=additional,
+                                                                                                    source_lengths=source_lengths,
+                                                                                                    attention_method_kwargs=attention_method_kwargs)
 
             for di in range(decoder_output.size(1)):
                 step_output = decoder_output[:, di, :]
@@ -267,10 +294,10 @@ class DecoderRNN(BaseRNN):
 
         return decoder_outputs, decoder_hidden, ret_dict
 
-    def forward_step(self, input_var, hidden, encoder_outputs, function, decoder_output, step,
+    def forward_step(self, input_var, hidden, encoder_outputs, function, controller_output, step,
                      source_lengths=None,
                      additional=None,
-                     **attention_method_kwargs):
+                     attention_method_kwargs={}):
         """
         Performs one or multiple forward decoder steps.
 
@@ -285,38 +312,40 @@ class DecoderRNN(BaseRNN):
             hidden: The hidden state at every time step of the decoder RNN
             attn: The attention distribution at every time step of the decoder RNN
         """
+        batch_size, output_len = input_var.size()
+
         embedded = self.embedding(input_var)
         embedded = self.input_dropout(embedded)
 
         if self.use_attention == 'pre-rnn':
-            context, attn = self._compute_context(decoder_output,
+            context, attn = self._compute_context(controller_output,
                                                   encoder_outputs,
                                                   source_lengths,
                                                   step,
                                                   additional,
-                                                  **attention_method_kwargs)
-            decoder_input = self._combine_context(embedded, context)
+                                                  attention_method_kwargs=attention_method_kwargs)
+            controller_input = self._combine_context(embedded, context)
         else:
-            decoder_input = embedded
+            controller_input = embedded
 
-        decoder_output, hidden = self.rnn(decoder_input, hidden)
+        controller_output, hidden = self.controller(controller_input, hidden)
 
         if self.use_attention == 'post-rnn':
-            context, attn = self._compute_context(decoder_output,
+            context, attn = self._compute_context(controller_output,
                                                   encoder_outputs,
                                                   source_lengths,
                                                   step,
                                                   additional,
-                                                  **attention_method_kwargs)
-            prediction_input = self._combine_context(decoder_output, context)
+                                                  attention_method_kwargs=attention_method_kwargs)
+            prediction_input = self._combine_context(controller_output, context)
         else:
-            prediction_input = decoder_output
+            prediction_input = controller_output
 
         prediction_input = prediction_input.contiguous().view(-1, self.out.in_features)
 
-        predicted_softmax = function(self.out(prediction_input), dim=1).view(batch_size, output_size, -1)
+        predicted_softmax = function(self.out(prediction_input), dim=1).view(batch_size, output_len, -1)
 
-        return predicted_softmax, hidden, attn, decoder_output, additional
+        return predicted_softmax, hidden, attn, controller_output, additional
 
     def _init_state(self, encoder_hidden):
         """ Initialize the encoder hidden state. """
@@ -348,7 +377,7 @@ class DecoderRNN(BaseRNN):
             if inputs is not None:
                 batch_size = inputs.size(0)
             else:
-                hidden = encoder_hidden[0] if self.is_kqrnn else encoder_hidden
+                hidden = encoder_hidden
 
                 if self.rnn_cell is nn.LSTM:
                     batch_size = hidden[0].size(1)
@@ -362,28 +391,29 @@ class DecoderRNN(BaseRNN):
             inputs = torch.LongTensor([self.sos_id] * batch_size).view(batch_size, 1)
             if torch.cuda.is_available():
                 inputs = inputs.cuda()
-            max_length = self.max_length
+            max_length = self.max_len
         else:
             max_length = inputs.size(1) - 1  # minus the start of sequence symbol
 
         return inputs, batch_size, max_length
 
-    def _compute_context(self, decoder_outputs, encoder_outputs, source_lengths, step, additional, **kwargs):
-        batch_size = decoder_outputs.size(0)
-
-        if self.query_generator is not None:
-            query, additional = self.query_generator(decoder_outputs, source_lengths, additional)
-        else:
-            query = decoder_outputs
-
+    def _compute_context(self, controller_output, encoder_outputs, source_lengths, step, additional, attention_method_kwargs={}):
         keys, values = encoder_outputs
 
-        content_attn, content_confidence = self.content_attention(query, keys, **kwargs)
+        batch_size = keys.size(0)
+
+        if self.query_generator is not None:
+            additional["step"] = step
+            query, additional = self.query_generator(controller_output, source_lengths, additional)
+        else:
+            query = controller_output
+
+        content_attn, content_confidence = self.content_attention(query, keys, **attention_method_kwargs)
 
         if self.is_positioner:
-            # controler should know his mu and sigma because depend on building blocks that he doesn't have access to
+            # controller should know his mu and sigma because depend on building blocks that he doesn't have access to
             # so unlike content he doesn't know anything !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            pos_attn, pos_confidence, mu, sigma = self.position_attention(decoder_outputs,
+            pos_attn, pos_confidence, mu, sigma = self.position_attention(controller_output,
                                                                           encoder_outputs,
                                                                           source_lengths,
                                                                           step,
@@ -393,17 +423,17 @@ class DecoderRNN(BaseRNN):
                                                                           additional["mean_attn"],
                                                                           additional)
 
-            attn, pos_perc = self.mix_attention(decoder_output,
+            attn, pos_perc = self.mix_attention(controller_output,
                                                 step,
                                                 content_attn,
                                                 content_confidence,
                                                 pos_attn,
                                                 pos_confidence,
-                                                additional["position_percentage"])  # the controler should also know that !!!!!!!!!!!!!
+                                                additional["position_percentage"])  # the controller should also know that !!!!!!!!!!!!!
 
             rel_counter_encoder = renormalize_input_length(self.position_attention.rel_counter.expand(batch_size, -1, 1),
                                                            source_lengths,
-                                                           self.max_length)
+                                                           self.max_len)
 
             additional["mu"] = mu
             additional["sigma"] = sigma
