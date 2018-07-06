@@ -35,7 +35,8 @@ def get_data(path, max_len, fields, format_ext='tsv'):
 
 def get_train_dev(train_path, dev_path, max_len, src_vocab, tgt_vocab, attention_method,
                   is_predict_eos=True,
-                  is_attnloss=False):
+                  is_attnloss=False,
+                  oneshot_path=None):
     """Get the fromatted train and dev data."""
     tabular_data_fields = get_tabular_data_fields(attention_method=attention_method,
                                                   is_predict_eos=is_predict_eos,
@@ -44,11 +45,20 @@ def get_train_dev(train_path, dev_path, max_len, src_vocab, tgt_vocab, attention
     train = get_data(train_path, max_len, tabular_data_fields)
     dev = get_data(dev_path, max_len, tabular_data_fields)
 
+    if oneshot_path is not None:
+        oneshot = get_data(oneshot_path, max_len, tabular_data_fields)
+    else:
+        oneshot = None
+
     tabular_data_fields = dict(tabular_data_fields)
     src = tabular_data_fields["src"]
     tgt = tabular_data_fields["tgt"]
 
-    src.build_vocab(train, max_size=src_vocab)
-    tgt.build_vocab(train, max_size=tgt_vocab)
+    if oneshot is not None:
+        src.build_vocab(oneshot, max_size=src_vocab)
+        tgt.build_vocab(oneshot, max_size=tgt_vocab)
+    else:
+        src.build_vocab(train, max_size=src_vocab)
+        tgt.build_vocab(train, max_size=tgt_vocab)
 
-    return train, dev, src, tgt
+    return train, dev, src, tgt, oneshot

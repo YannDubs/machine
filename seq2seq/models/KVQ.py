@@ -51,14 +51,15 @@ def _get_counters(max_len, is_abscounter, is_relcounter, is_rotcounters, input_l
 class BaseKeyValueQuery(nn.Module):
     def __init__(self, hidden_size,
                  output_size=-1,
-                 is_contained_kv=False):
+                 is_contained_kv=False,
+                 min_input_size=32):
 
         super(BaseKeyValueQuery, self).__init__()
 
         self.hidden_size = hidden_size
         self.output_size = _compute_size(output_size, self.hidden_size, name="output_size - {}".format(type(self).__name__))
         self.is_contained_kv = is_contained_kv
-        self.input_size = self.output_size if self.is_contained_kv else self.hidden_size
+        self.input_size = max(min_input_size, self.output_size) if self.is_contained_kv else self.hidden_size
 
     def reset_parameters(self):
         self.apply(weights_init)
@@ -176,6 +177,7 @@ class ValueGenerator(BaseKeyValueQuery):
                  is_highway=False,
                  is_res=False,
                  is_mlps=True,
+                 bias_highway=0,  # 1.77,
                  **kwargs):
 
         super(ValueGenerator, self).__init__(hidden_size, **kwargs)
@@ -184,6 +186,7 @@ class ValueGenerator(BaseKeyValueQuery):
             assert self.output_size in [1, self.hidden_size], "Can only work with value size in {-1,1} when using highway."
 
         self.is_highway = is_highway
+        self.bias_highway = bias_highway
         self.is_res = is_res
         if is_mlps:
             self.generator = MLP(self.input_size, max(self.output_size, min_generator_hidden), self.output_size)
@@ -203,7 +206,7 @@ class ValueGenerator(BaseKeyValueQuery):
         values = self.generator(input_generator)
 
         if self.is_highway:
-            carry_rates = generate_probabilities(values)
+            carry_rates = generate_probabilities(values, bias=self.bias_highway)
             values = (1 - carry_rates) * encoder_out + carry_rates * embedded
 
         if self.is_res:

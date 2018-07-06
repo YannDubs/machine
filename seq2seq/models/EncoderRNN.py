@@ -55,7 +55,8 @@ class EncoderRNN(BaseRNN):
                  is_highway=False,
                  is_res=False,
                  is_kv=False,
-                 is_decoupled_kv=False):
+                 is_decoupled_kv=False,
+                 bias_highway=0):
         super(EncoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p, n_layers, rnn_cell)
 
@@ -68,6 +69,7 @@ class EncoderRNN(BaseRNN):
         self.is_highway = is_highway
         self.is_res = is_res
         self.is_decoupled_kv = is_decoupled_kv
+        self.bias_highway = bias_highway
         # # # # # # # # # # # # # # # #
 
         self.embedding = nn.Embedding(vocab_size, embedding_size)
@@ -149,7 +151,7 @@ class EncoderRNN(BaseRNN):
             keys = values = output
 
             if self.is_highway:
-                carry_rate = generate_probabilities(self.carry)
+                carry_rate = generate_probabilities(self.carry, bias=self.bias_highway)
                 values = (1 - carry_rate) * values + (carry_rate) * embedded
 
             if self.is_decoupled_kv:

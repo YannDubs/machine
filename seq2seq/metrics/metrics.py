@@ -256,7 +256,16 @@ class SymbolRewritingAccuracy(Metric):
     _SHORTNAME = "sym_rwr_acc"
     _INPUT = "seqlist"
 
-    def __init__(self, input_vocab, output_vocab, use_output_eos, input_pad_symbol, output_sos_symbol, output_pad_symbol, output_eos_symbol, output_unk_symbol):
+    def __init__(self,
+                 input_vocab,
+                 output_vocab,
+                 use_output_eos,
+                 input_pad_symbol,
+                 output_sos_symbol,
+                 output_pad_symbol,
+                 output_eos_symbol,
+                 output_unk_symbol,
+                 is_rm_last_input=True):
         self.input_vocab = input_vocab
         self.output_vocab = output_vocab
 
@@ -268,6 +277,8 @@ class SymbolRewritingAccuracy(Metric):
         self.output_pad_symbol = output_pad_symbol
         self.output_eos_symbol = output_eos_symbol
         self.output_unk_symbol = output_unk_symbol
+
+        self.is_rm_last_input = is_rm_last_input
 
         self.seq_correct = 0
         self.seq_total = 0
@@ -359,14 +370,16 @@ class SymbolRewritingAccuracy(Metric):
             # Convert indices to strings
             # Remove all padding from the grammar.
             grammar = [self.input_vocab.itos[token] for token in grammar if
-                       self.input_vocab.itos[token] not in [token, self.input_pad_symbol, "."]]
+                       self.input_vocab.itos[token] not in [token, self.input_pad_symbol]]
             prediction = [self.output_vocab.itos[token] for token in prediction]
+
+            if self.is_rm_last_input:
+                grammar = grammar[:-1]
 
             # Each input symbol has to produce exactly three outputs
             required_output_length = 3 * len(grammar)
 
             # The first prediction after the actual output should be EOS
-            print(prediction, required_output_length, len(prediction))
             if self.use_output_eos and prediction[required_output_length] != self.output_eos_symbol:
                 continue
 

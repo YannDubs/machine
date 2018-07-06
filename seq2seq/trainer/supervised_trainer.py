@@ -289,7 +289,8 @@ class SupervisedTrainer(object):
               checkpoint_path=None,
               top_k=5,
               is_plot=False,
-              optimizer_kwargs={}):
+              optimizer_kwargs={},
+              is_oneshot=False):
         """ Run training for a given model.
 
         Args:
@@ -309,7 +310,7 @@ class SupervisedTrainer(object):
             model (seq2seq.models): trained model.
         """
         # If training is set to resume
-        if resume:
+        if resume or is_oneshot:
             resume_checkpoint = Checkpoint.load(checkpoint_path)
             model = resume_checkpoint.model
             self.optimizer = resume_checkpoint.optimizer
@@ -319,10 +320,15 @@ class SupervisedTrainer(object):
             defaults = resume_optim.param_groups[0]
             defaults.pop('params', None)
             defaults.pop('initial_lr', None)
-            self.optimizer.optimizer = resume_optim.__class__(model.parameters(), **defaults, **optimizer_kwargs)
+            # SHOULD ALSO GIVE , **optimizer_kwargs ????????????????
+            self.optimizer.optimizer = resume_optim.__class__(model.parameters(), **defaults)
 
-            start_epoch = resume_checkpoint.epoch
-            step = resume_checkpoint.step
+            if is_oneshot:
+                start_epoch = 0
+                step = 0
+            else:
+                start_epoch = resume_checkpoint.epoch
+                step = resume_checkpoint.step
         else:
             start_epoch = 1
             step = 0

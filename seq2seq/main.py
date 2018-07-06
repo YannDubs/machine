@@ -20,6 +20,13 @@ logging.basicConfig(format=LOG_FORMAT, level=getattr(logging, log_level.upper())
 logger = logging.getLogger(__name__)
 
 
+def get_latest(path):
+    """Return the latest modified/added file in a path."""
+    list_of_files = glob.glob(os.path.join(path, "*"))
+    latest_file = max(list_of_files, key=os.path.getctime)
+    return latest_file
+
+
 def _save_parameters(args, directory, filename="train_arguments.txt"):
     """Save arguments to a file given a dictionnary."""
     with open(os.path.join(directory, filename), 'w') as file:
@@ -28,8 +35,7 @@ def _save_parameters(args, directory, filename="train_arguments.txt"):
 
 def _rename_latest(path, new_name):
     """Rename the latest modified/added file in a path."""
-    list_of_files = glob.glob(os.path.join(path, "*"))
-    latest_file = max(list_of_files, key=os.path.getctime)
+    latest_file = get_latest(path)
     os.rename(latest_file, os.path.join(path, new_name))
 
 
@@ -72,7 +78,8 @@ def _get_seq2seq_model(src,
                        is_relative_sigma=True,
                        is_mlps=True,
                        kq_dropout=0,
-                       mid_noise_sigma=0):
+                       mid_noise_sigma=0,
+                       bias_highway=0):
 
     # Encoder
     key_kwargs = get_kwargs(output_size=key_size,
@@ -91,7 +98,8 @@ def _get_seq2seq_model(src,
                               is_contained_kv=is_contained_kv,
                               is_highway=is_highway,
                               is_res=is_res,
-                              is_mlps=is_mlps)
+                              is_mlps=is_mlps,
+                              bias_highway=bias_highway)
 
     encoder = EncoderRNN(len(src.vocab),
                          max_len,
@@ -108,7 +116,8 @@ def _get_seq2seq_model(src,
                          is_highway=is_highway,
                          is_res=is_res,
                          is_kv=is_kv,
-                         is_decoupled_kv=is_decoupled_kv)
+                         is_decoupled_kv=is_decoupled_kv,
+                         bias_highway=bias_highway)
 
     value_size = encoder.value_size
 
@@ -155,6 +164,7 @@ def _get_seq2seq_model(src,
 
 def train(train_path,
           dev_path,
+          oneshot_path=None,
           metric_names=["word accuracy", "sequence accuracy", "final target accuracy"],
           loss_names=["nll"],
           max_len=50,
@@ -196,10 +206,11 @@ def train(train_path,
         print("Cuda device set to %i" % cuda_device)
         torch.cuda.set_device(cuda_device)
 
-    train, dev, src, tgt = get_train_dev(train_path, dev_path, max_len, src_vocab, tgt_vocab,
-                                         is_predict_eos=is_predict_eos,
-                                         is_attnloss=is_attnloss,
-                                         attention_method=attention_method)
+    train, dev, src, tgt, oneshot = get_train_dev(train_path, dev_path, max_len, src_vocab, tgt_vocab,
+                                                  is_predict_eos=is_predict_eos,
+                                                  is_attnloss=is_attnloss,
+                                                  attention_method=attention_method,
+                                                  oneshot_path=oneshot_path)
 
     seq2seq = _get_seq2seq_model(src, tgt, max_len,
                                  attention=attention,
@@ -248,6 +259,19 @@ def train(train_path,
                                            resume=resume,
                                            checkpoint_path=checkpoint_path,
                                            top_k=1)
+
+    if oneshot is not None:
+        seq2seq, logs_oneshot, history_oneshot = trainer.train(seq2seq,
+                                                               oneshot,
+                                                               num_epochs=5,
+                                                               dev_data=dev,
+                                                               optimizer=optim,
+                                                               optimizer_kwargs=optimizer_kwargs,
+                                                               teacher_forcing_ratio=0,
+                                                               learning_rate=lr,
+                                                               is_oneshot=True,
+                                                               checkpoint_path=get_latest(output_dir),
+                                                               top_k=1)
 
     if name_checkpoint is not None:
         _rename_latest(output_dir, name_checkpoint)

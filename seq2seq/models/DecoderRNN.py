@@ -317,6 +317,7 @@ class DecoderRNN(BaseRNN):
         embedded = self.embedding(input_var)
         embedded = self.input_dropout(embedded)
 
+        attn = None
         if self.use_attention == 'pre-rnn':
             context, attn = self._compute_context(controller_output,
                                                   encoder_outputs,

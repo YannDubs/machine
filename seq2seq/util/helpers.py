@@ -66,7 +66,7 @@ def generate_probabilities(x, min_p=0, activation="sigmoid", temperature=1, bias
     if activation == "sigmoid":
         full_p = F.sigmoid(x * temperature + bias)
     elif activation == "hard-sigmoid":
-        full_p = max(0, min(1, 0.2 * x * temperature + 0.5 + bias))  # makes the default similar to hard sigmoid
+        full_p = max(0, min(1, 0.2 * ((x * temperature) + bias) + 0.5))  # makes the default similar to hard sigmoid
     else:
         raise ValueError("Unkown activation : {}".format(activation))
 
