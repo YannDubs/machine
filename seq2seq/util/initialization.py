@@ -32,7 +32,7 @@ def get_gain(activation):
     return gain
 
 
-def init_param(param, activation=None, is_positive=False, bound=0.05):  # default bound liek keras
+def init_param(param, activation=None, is_positive=False, bound=0.05):  # default bound like keras
     """Initializes some parameters of the model that are not part of an children module."""
     gain = get_gain(activation)
     if is_positive:

@@ -27,8 +27,15 @@ def _get_loss(loss_name, token_loss_weight, tgt):
 
 
 def get_losses(loss_names, tgt, is_predict_eos, eos_weight=None):
-    """loss_names is a list where each element is either the name of the loss or a tuple
-    of (loss_name, loss_weight)."""
+    """Gets a list of losses.
+
+    loss_names (list, optional): list where each element is either the name of the loss or a tuple
+        of (loss_name, loss_weight). Current available losses : {"nll", "perplexity", "attention loss"}
+    tgt (TargetField): target field.
+    is_predict_eos (bool, optional): whether the mdoel has to predict the <eos> token.
+    is_predict_eos (bool, optional): whether the mdoel has to predict the <eos> token.
+    eos_weight (int, optional): weight of the loss that should be given to the <eos> token.
+    """
     if is_predict_eos:
         token_loss_weight = torch.ones(len(tgt.vocab.stoi))
         if eos_weight is not None:

@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
 from seq2seq.util.initialization import weights_init, linear_init
-from seq2seq.util.helpers import MLP, generate_probabilities
+from seq2seq.util.helpers import MLP, ProbabilityConverter, log_sum_exp
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -60,8 +60,7 @@ class ContentAttention(nn.Module):
         self.mask = None
         self.method = self.get_method(method, dim)
 
-        self.confidence_temperature = Parameter(torch.tensor(1.0)).to(device)
-        self.confidence_bias = Parameter(torch.tensor(0.0)).to(device)
+        self.probabilty_converter = ProbabilityConverter(is_temperature=True, is_bias=True)
 
         self.reset_parameters()
 
@@ -78,6 +77,14 @@ class ContentAttention(nn.Module):
         self.mask = mask
 
     def forward(self, queries, keys, **attention_method_kwargs):
+        """Compute the content attention.
+
+        Args:
+            queries (torch.tensor): tensor of size (batch_size, n_queries, kq_size) containing the queries.
+            keys (torch.tensor): tensor of size (batch_size, n_keys, kq_size) containing the keys.
+            attention_method_kwargs:
+                Additional arguments to the attention method.
+        """
         batch_size, n_queries, kq_size = queries.size()
         n_keys = keys.size(1)
 
@@ -105,8 +112,8 @@ class ContentAttention(nn.Module):
         # apply local mask
         logits.masked_fill_(mask, -float('inf'))
 
-        confidence = generate_probabilities(logits, temperature=self.confidence_temperature, bias=self.confidence_bias)
-        confidence = confidence.mean(dim=-1)
+        approx_max_logit = log_sum_exp(logits, dim=-1)
+        confidence = self.probabilty_converter(approx_max_logit)
 
         attn = F.softmax(logits.view(-1, n_keys), dim=1).view(batch_size, -1, n_keys)
 

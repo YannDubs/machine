@@ -35,6 +35,16 @@ class DecoderRNN(BaseRNN):
         dropout_p (float, optional): dropout probability for the output sequence (default: 0)
         use_attention(bool, optional): flag indication whether to use attention mechanism or not (default: false)
         full_focus(bool, optional): flag indication whether to use full attention mechanism or not (default: false)
+        is_transform_controller (bool, optional): whether to pass the hidden activation of the encoder through a linear layer before
+            using it as initialization of the decoder. This is useful when using `pre-rnn` attention, where the first input
+            to the content and positional attention generator is the last hidden activation.
+        values_size (int, optional): size of the generated value. -1 means same as hidden size. Can also give percentage of
+            hidden size betwen 0 and 1.
+        is_positioner (bool, optional): whether to use positional attention in addition to the content one.
+        is_query (bool, optional): whether to use a query generator.
+        pag_kwargs (dict, optional): additional arguments to the positional attention generator.
+        query_kwargs (dict, optional): additional arguments to the query generator.
+        attmix_kwargs (dict, optional): additional arguments to the attention mixer.
 
     Attributes:
         KEY_ATTN_SCORE (str): key used to indicate attention weights in `ret_dict`
@@ -177,16 +187,17 @@ class DecoderRNN(BaseRNN):
                 teacher_forcing_ratio=0,
                 provided_attention=None,
                 source_lengths=None,
-                additional=None):
+                additional=None,
+                confusers=dict(),
+                additional_to_store=["content_attention", "position_attention", "position_percentage",
+                                     "mu", 'sigma', "content_confidence", "pos_confidence"]):
 
         def decode(step, step_output, step_attn, additional=None):
-            keys_to_store = ["content_attention", "position_attention", "position_percentage", "mu", 'sigma']
-
             decoder_outputs.append(step_output)
             if self.use_attention:
                 ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
             if additional is not None:
-                for k in keys_to_store:
+                for k in additional_to_store:
                     if k in additional:
                         ret_dict[k] = ret_dict.get(k, list())
                         ret_dict[k].append(additional[k])
@@ -205,6 +216,9 @@ class DecoderRNN(BaseRNN):
             ret_dict[DecoderRNN.KEY_ATTN_SCORE] = list()
 
         additional = self._initialize_additional(additional)
+
+        if "carry_rates" in additional:
+            ret_dict["carry_rates"] = additional["carry_rates"]  # should add to docstring + cleaner ?????
 
         inputs, batch_size, max_length = self._validate_args(inputs, encoder_hidden, encoder_outputs,
                                                              function, teacher_forcing_ratio)
@@ -248,15 +262,21 @@ class DecoderRNN(BaseRNN):
                 # Perform one forward step
                 if self.content_attention and isinstance(self.content_attention.method, HardGuidance):
                     attention_method_kwargs['step'] = di
-                decoder_output, decoder_hidden, step_attn, controller_output, additional = self.forward_step(decoder_input,
-                                                                                                             decoder_hidden,
-                                                                                                             encoder_outputs,
-                                                                                                             function,
-                                                                                                             controller_output,
-                                                                                                             di,
-                                                                                                             additional=additional,
-                                                                                                             source_lengths=source_lengths,
-                                                                                                             attention_method_kwargs=attention_method_kwargs)
+
+                (decoder_output,
+                    decoder_hidden,
+                    step_attn,
+                    controller_output,
+                    additional) = self.forward_step(decoder_input,
+                                                    decoder_hidden,
+                                                    encoder_outputs,
+                                                    function,
+                                                    controller_output,
+                                                    di,
+                                                    additional=additional,
+                                                    source_lengths=source_lengths,
+                                                    attention_method_kwargs=attention_method_kwargs,
+                                                    confusers=confusers)
 
                 # Remove the unnecessary dimension.
                 step_output = decoder_output.squeeze(1)
@@ -271,15 +291,21 @@ class DecoderRNN(BaseRNN):
             # Forward step without unrolling
             if self.content_attention and isinstance(self.content_attention.method, HardGuidance):
                 attention_method_kwargs['step'] = -1
-            decoder_output, decoder_hidden, attn, controller_output, additional = self.forward_step(decoder_input,
-                                                                                                    decoder_hidden,
-                                                                                                    encoder_outputs,
-                                                                                                    function,
-                                                                                                    controller_output,
-                                                                                                    0,
-                                                                                                    additional=additional,
-                                                                                                    source_lengths=source_lengths,
-                                                                                                    attention_method_kwargs=attention_method_kwargs)
+
+            (decoder_output,
+                decoder_hidden,
+                attn,
+                controller_output,
+                additional) = self.forward_step(decoder_input,
+                                                decoder_hidden,
+                                                encoder_outputs,
+                                                function,
+                                                controller_output,
+                                                0,
+                                                additional=additional,
+                                                source_lengths=source_lengths,
+                                                attention_method_kwargs=attention_method_kwargs,
+                                                confusers=confusers)
 
             for di in range(decoder_output.size(1)):
                 step_output = decoder_output[:, di, :]
@@ -297,7 +323,8 @@ class DecoderRNN(BaseRNN):
     def forward_step(self, input_var, hidden, encoder_outputs, function, controller_output, step,
                      source_lengths=None,
                      additional=None,
-                     attention_method_kwargs={}):
+                     attention_method_kwargs={},
+                     confusers=dict()):
         """
         Performs one or multiple forward decoder steps.
 
@@ -324,12 +351,16 @@ class DecoderRNN(BaseRNN):
                                                   source_lengths,
                                                   step,
                                                   additional,
-                                                  attention_method_kwargs=attention_method_kwargs)
+                                                  attention_method_kwargs=attention_method_kwargs,
+                                                  confusers=confusers)
             controller_input = self._combine_context(embedded, context)
         else:
             controller_input = embedded
 
         controller_output, hidden = self.controller(controller_input, hidden)
+
+        if "eos_confuser" in confusers:
+            confusers["eos_confuser"].compute_loss(controller_output)
 
         if self.use_attention == 'post-rnn':
             context, attn = self._compute_context(controller_output,
@@ -337,7 +368,8 @@ class DecoderRNN(BaseRNN):
                                                   source_lengths,
                                                   step,
                                                   additional,
-                                                  attention_method_kwargs=attention_method_kwargs)
+                                                  attention_method_kwargs=attention_method_kwargs,
+                                                  confusers=confusers)
             prediction_input = self._combine_context(controller_output, context)
         else:
             prediction_input = controller_output
@@ -398,7 +430,8 @@ class DecoderRNN(BaseRNN):
 
         return inputs, batch_size, max_length
 
-    def _compute_context(self, controller_output, encoder_outputs, source_lengths, step, additional, attention_method_kwargs={}):
+    def _compute_context(self, controller_output, encoder_outputs, source_lengths, step, additional,
+                         attention_method_kwargs={}, confusers=dict()):
         keys, values = encoder_outputs
 
         batch_size = keys.size(0)
@@ -409,13 +442,15 @@ class DecoderRNN(BaseRNN):
         else:
             query = controller_output
 
+        if "query_confuser" in confusers:
+            confusers["query_confuser"].compute_loss(query, torch.arange(self.max_len)[step:step+query.size(1)].view(1,-1,1).expand(batch_size,-1,query.size(2)))
+
         content_attn, content_confidence = self.content_attention(query, keys, **attention_method_kwargs)
 
         if self.is_positioner:
             # controller should know his mu and sigma because depend on building blocks that he doesn't have access to
             # so unlike content he doesn't know anything !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
             pos_attn, pos_confidence, mu, sigma = self.position_attention(controller_output,
-                                                                          encoder_outputs,
                                                                           source_lengths,
                                                                           step,
                                                                           additional["mu"],
@@ -443,6 +478,8 @@ class DecoderRNN(BaseRNN):
             additional["content_attention"] = content_attn
             additional["position_attention"] = pos_attn
             additional["position_percentage"] = pos_perc
+            additional["pos_confidence"] = pos_confidence
+            additional["content_confidence"] = content_confidence
 
         else:
             attn = content_attn

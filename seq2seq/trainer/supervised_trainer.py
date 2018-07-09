@@ -5,6 +5,7 @@ import random
 import shutil
 
 import torch
+import torch.nn as nn
 import torchtext
 from torch import optim
 
@@ -91,13 +92,14 @@ class SupervisedTrainer(object):
 
         self.logger = logging.getLogger(__name__)
 
-    def _train_batch(self, input_variable, input_lengths, target_variable, model, teacher_forcing_ratio, mid_dropout_p=0):
+    def _train_batch(self, input_variable, input_lengths, target_variable, model, teacher_forcing_ratio, mid_dropout_p=0, confusers=dict()):
         loss = self.loss
 
         # Forward propagation
         decoder_outputs, decoder_hidden, other = model(input_variable, input_lengths, target_variable,
                                                        teacher_forcing_ratio=teacher_forcing_ratio,
-                                                       mid_dropout_p=mid_dropout_p)
+                                                       mid_dropout_p=mid_dropout_p,
+                                                       confusers=confusers)
 
         losses = self.evaluator.compute_batch_loss(decoder_outputs, decoder_hidden, other, target_variable)
 
@@ -106,17 +108,27 @@ class SupervisedTrainer(object):
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
 
+        for _, confuser in confusers.items():
+            confuser.backward(retain_graph=True)
+
         if self.clipper is not None:
             self.clipper(model.parameters())
 
         self.optimizer.step()
         model.zero_grad()
 
+        for _, confuser in confusers.items():
+            confuser.step_discriminator()
+
         return losses
 
     def _train_epoches(self, data, model, n_epochs, start_epoch, start_step,
-                       dev_data=None, monitor_data=[], teacher_forcing_ratio=0,
-                       top_k=5):
+                       dev_data=None,
+                       monitor_data=[],
+                       teacher_forcing_ratio=0,
+                       top_k=5,
+                       confusers=dict()):
+
         log = self.logger
 
         print_loss_total = defaultdict(float)  # Reset every print_every
@@ -156,6 +168,7 @@ class SupervisedTrainer(object):
                    output_vocab=data.fields[seq2seq.tgt_field_name].vocab).save(self.expt_dir, name=model_name)
 
         for epoch in range(start_epoch, n_epochs + 1):
+            print(epoch)
             mid_dropout_p = self.anneal_middropout**epoch
 
             log.info("Epoch: %d, Step: %d" % (epoch, step))
@@ -178,7 +191,8 @@ class SupervisedTrainer(object):
                                            target_variables,
                                            model,
                                            teacher_forcing_ratio,
-                                           mid_dropout_p=mid_dropout_p)
+                                           mid_dropout_p=mid_dropout_p,
+                                           confusers=confusers)
 
                 # Record average loss
                 for loss in losses:
@@ -290,7 +304,8 @@ class SupervisedTrainer(object):
               top_k=5,
               is_plot=False,
               optimizer_kwargs={},
-              is_oneshot=False):
+              is_oneshot=False,
+              confusers=dict()):
         """ Run training for a given model.
 
         Args:
@@ -340,18 +355,28 @@ class SupervisedTrainer(object):
                           None: optim.Adam}
                 return optims[optim_name]
 
-            self.optimizer = Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate, **optimizer_kwargs),
-                                       max_grad_norm=5)
+            def instantiate_optim(params):
+                return Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate, **optimizer_kwargs),
+                                 max_grad_norm=5)
+
+            self.optimizer = instantiate_optim(model.parameters())
+
+            """
+            for _, confuser in confusers.items():
+                confuser.set_optim(instantiate_optim)
+            """
 
         self.history = History(num_epochs)
         self.plotter = Plotter() if is_plot and dev_data is not None else None
         self.logger.info("Optimizer: %s, Scheduler: %s" % (self.optimizer.optimizer, self.optimizer.scheduler))
 
         logs = self._train_epoches(data, model, num_epochs,
-                                   start_epoch, step, dev_data=dev_data,
+                                   start_epoch, step,
+                                   dev_data=dev_data,
                                    monitor_data=monitor_data,
                                    teacher_forcing_ratio=teacher_forcing_ratio,
-                                   top_k=top_k)
+                                   top_k=top_k,
+                                   confusers=confusers)
         return model, logs, self.history
 
     @staticmethod

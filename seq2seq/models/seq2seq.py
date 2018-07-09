@@ -56,7 +56,9 @@ class Seq2seq(nn.Module):
                 input_lengths=None,
                 target_variables=None,
                 teacher_forcing_ratio=0,
-                mid_dropout_p=0):
+                mid_dropout_p=0,
+                confusers=dict()):
+
         def _mid_droupout(x):
             if self.dropout.p != 0:
                 return self.dropout(x)
@@ -87,6 +89,7 @@ class Seq2seq(nn.Module):
                                teacher_forcing_ratio=teacher_forcing_ratio,
                                provided_attention=provided_attention,
                                source_lengths=input_lengths,
-                               additional=additional)
+                               additional=additional,
+                               confusers=confusers)
 
         return results

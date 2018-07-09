@@ -5,7 +5,7 @@ from torch.nn.parameter import Parameter
 from .baseRNN import BaseRNN
 
 from seq2seq.util.initialization import get_hidden0, replicate_hidden0, init_param, weights_init
-from seq2seq.util.helpers import generate_probabilities
+from seq2seq.util.helpers import ProbabilityConverter
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -26,6 +26,8 @@ class EncoderRNN(BaseRNN):
         bidirectional (bool, optional): if True, becomes a bidirectional encoder (default False)
         dropout_p (float, optional): dropout probability for the output sequence (default: 0)
         variable_lengths (bool, optional): if use variable length RNN (default: False)
+        key_kwargs (dict, optional): additional arguments to the key generator.
+        value_kwargs (dict, optional): additional arguments to the value generator.
 
     Inputs: inputs, input_lengths
         - **inputs**: list of sequences, whose length is the batch size and within which each sequence is a list of token IDs.
@@ -56,7 +58,7 @@ class EncoderRNN(BaseRNN):
                  is_res=False,
                  is_kv=False,
                  is_decoupled_kv=False,
-                 bias_highway=0):
+                 initial_highway=0.5):
         super(EncoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p, n_layers, rnn_cell)
 
@@ -69,7 +71,6 @@ class EncoderRNN(BaseRNN):
         self.is_highway = is_highway
         self.is_res = is_res
         self.is_decoupled_kv = is_decoupled_kv
-        self.bias_highway = bias_highway
         # # # # # # # # # # # # # # # #
 
         self.embedding = nn.Embedding(vocab_size, embedding_size)
@@ -81,7 +82,7 @@ class EncoderRNN(BaseRNN):
             self.key_generator = KeyGenerator(self.bidirectional_hidden_size, self.max_len, **key_kwargs)
             self.key_size = self.key_generator.output_size
 
-            self.value_generator = ValueGenerator(self.bidirectional_hidden_size, **value_kwargs)
+            self.value_generator = ValueGenerator(self.bidirectional_hidden_size, embedding_size, **value_kwargs)
             self.value_size = self.value_generator.output_size
         else:
             self.key_size = self.bidirectional_hidden_size
@@ -92,6 +93,7 @@ class EncoderRNN(BaseRNN):
             if self.bidirectional_hidden_size != self.embedding_size:
                 raise ValueError("hidden_size should be equal embedding_size when using highway.")
             self.carry = Parameter(torch.tensor(1.0)).to(device)
+            self.probabilty_converter = ProbabilityConverter(initial_probability=initial_highway)
         # # # # # # # # # # # # # # # #
 
         self.reset_parameters()
@@ -144,14 +146,14 @@ class EncoderRNN(BaseRNN):
 
         if self.is_kv:
             keys, additional = self.key_generator(output, input_lengths, additional)
-            values = self.value_generator(output, embedded)
+            values, additional = self.value_generator(output, embedded, additional)
 
         # # # keeping for testing # # #
         else:
             keys = values = output
 
             if self.is_highway:
-                carry_rate = generate_probabilities(self.carry, bias=self.bias_highway)
+                carry_rate = self.probabilty_converter(self.carry)
                 values = (1 - carry_rate) * values + (carry_rate) * embedded
 
             if self.is_decoupled_kv:

@@ -29,6 +29,14 @@ def _get_metric(metric_name, src, tgt, is_predict_eos):
 
 
 def get_metrics(metric_names, src, tgt, is_predict_eos):
+    """ Gets a list of metrics.
+
+    metric_names (list of str, optional): names of the metrics to use. Currently available: {"word accuracy",
+        "sequence accuracy", "final target accuracy", "symbol rewriting accuracy"}.
+    src (SourceField): source field.
+    tgt (TargetField): target field.
+    is_predict_eos (bool, optional): whether the mdoel has to predict the <eos> token.
+    """
     metrics = [_get_metric(metric_name, src, tgt, is_predict_eos) for metric_name in metric_names]
     return metrics
 
