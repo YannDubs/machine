@@ -13,7 +13,7 @@ from .attention import ContentAttention, HardGuidance
 from .baseRNN import BaseRNN
 
 from seq2seq.util.helpers import (renormalize_input_length, AnnealedGaussianNoise,
-                                  get_rnn, get_extra_repr)
+                                  get_rnn, get_extra_repr, format_source_lengths)
 from seq2seq.util.initialization import weights_init, init_param
 from seq2seq.models.KVQ import QueryGenerator
 from seq2seq.models.Positioner import AttentionMixer, PositionAttention
@@ -183,14 +183,14 @@ class DecoderRNN(BaseRNN):
         if self.is_add_all_controller:
             n_additional_controller_features += 3  # abs_counter_decoder / rel_counter_decoder / source_len
             if self.use_attention is not None:
-                self.mean_attn0 = Parameter(torch.tensor(0.0)).to(device)
+                self.mean_attn0 = Parameter(torch.tensor(0.0))
                 n_additional_controller_features += 1  # mean_attn_old
             if self.is_content_attn:
-                self.mean_content0 = Parameter(torch.tensor(0.0)).to(device)
-                self.content_confidence0 = Parameter(torch.tensor(0.5)).to(device)
+                self.mean_content0 = Parameter(torch.tensor(0.0))
+                self.content_confidence0 = Parameter(torch.tensor(0.5))
                 n_additional_controller_features += 2  # mean_content_old / content_confidence_old
             if self.is_position_attn:
-                self.pos_confidence0 = Parameter(torch.tensor(0.5)).to(device)
+                self.pos_confidence0 = Parameter(torch.tensor(0.5))
                 n_additional_controller_features += 3  # mu_old / sigma_old / pos_confidence_old
             if self.is_content_attn and self.is_position_attn:
                 n_additional_controller_features += 1  # position_perc_old
@@ -282,18 +282,18 @@ class DecoderRNN(BaseRNN):
         if self.is_add_all_controller:
             if self.use_attention is not None:
                 if IS_X05:
-                    self.mean_attn0 = Parameter(torch.tensor(0.5)).to(device)
+                    self.mean_attn0 = Parameter(torch.tensor(0.5))
                 else:
                     init_param(self.mean_attn0, is_positive=True)
             if self.is_content_attn:
                 if IS_X05:
-                    self.mean_content0 = Parameter(torch.tensor(0.5)).to(device)
+                    self.mean_content0 = Parameter(torch.tensor(0.5))
                 else:
                     init_param(self.mean_content0, is_positive=True)
 
-                self.content_confidence0 = Parameter(torch.tensor(0.5)).to(device)
+                self.content_confidence0 = Parameter(torch.tensor(0.5))
             if self.is_position_attn:
-                self.pos_confidence0 = Parameter(torch.tensor(0.5)).to(device)
+                self.pos_confidence0 = Parameter(torch.tensor(0.5))
 
     def flatten_parameters(self):
         self.controller.flatten_parameters()
@@ -501,6 +501,8 @@ class DecoderRNN(BaseRNN):
             hidden: The hidden state at every time step of the decoder RNN
             attn: The attention distribution at every time step of the decoder RNN
         """
+        source_lengths_list, source_lengths_tensor = format_source_lengths(source_lengths)
+
         batch_size, output_len = input_var.size()
 
         embedded = self.embedding(input_var)
@@ -523,7 +525,7 @@ class DecoderRNN(BaseRNN):
         if self.is_add_all_controller:
             additional_controller_features = self._get_additional_controller_features(additional,
                                                                                       step,
-                                                                                      source_lengths)
+                                                                                      source_lengths_tensor)
 
             controller_input = torch.cat([controller_input] +
                                          additional_controller_features,
@@ -607,13 +609,17 @@ class DecoderRNN(BaseRNN):
 
     def _compute_context(self, controller_output, encoder_outputs, source_lengths,
                          step, additional, content_method_kwargs={}, confusers=dict()):
+        source_lengths_list, source_lengths_tensor = format_source_lengths(source_lengths)
+
         keys, values = encoder_outputs
 
         batch_size = keys.size(0)
 
         if self.query_generator is not None:
             additional["step"] = step
-            query, additional = self.query_generator(controller_output, source_lengths, additional)
+            query, additional = self.query_generator(controller_output,
+                                                     source_lengths_tensor,
+                                                     additional)
         else:
             query = controller_output
 
@@ -625,7 +631,7 @@ class DecoderRNN(BaseRNN):
 
         unormalized_counter = self.rel_counter.expand(batch_size, -1, 1)
         rel_counter_encoder = renormalize_input_length(unormalized_counter,
-                                                       source_lengths,
+                                                       source_lengths_tensor,
                                                        self.max_len)
 
         if self.is_content_attn:
@@ -734,13 +740,13 @@ class DecoderRNN(BaseRNN):
 
         return combined_input
 
-    def _get_additional_controller_features(self, additional, step, source_lengths):
-        batch_size = len(source_lengths)
+    def _get_additional_controller_features(self, additional, step, source_lengths_tensor):
+        batch_size = len(source_lengths_tensor)
         additional_features = []
 
         unormalized_counter = self.rel_counter[step:step + 1].expand(batch_size, 1)
         rel_counter_decoder = renormalize_input_length(unormalized_counter,
-                                                       source_lengths,
+                                                       source_lengths_tensor,
                                                        self.max_len
                                                        ).unsqueeze(1)
 
@@ -748,7 +754,7 @@ class DecoderRNN(BaseRNN):
                                                                      ).unsqueeze(1)
         abs_counter_decoder = abs_counter_decoder * self.max_len
 
-        source_len = torch.FloatTensor(source_lengths).unsqueeze(-1).unsqueeze(-1)
+        source_len = source_lengths_tensor.unsqueeze(-1).unsqueeze(-1)
 
         additional_features.extend([source_len, rel_counter_decoder, abs_counter_decoder])
 

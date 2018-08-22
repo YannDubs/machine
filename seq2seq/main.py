@@ -525,8 +525,8 @@ def train(train_path,
     n_parameters = sum([p.numel() for p in seq2seq.parameters()])
     saved_args["n_parameters"] = n_parameters
 
-    seq2seq.to(device)
     seq2seq.reset_parameters()
+    seq2seq.to(device)
 
     if is_basic_init:
         for param in seq2seq.parameters():

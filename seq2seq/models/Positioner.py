@@ -7,7 +7,8 @@ from torch.nn.utils.rnn import pad_sequence
 
 from seq2seq.util.helpers import (MLP, renormalize_input_length, get_rnn,
                                   ProbabilityConverter, AnnealedGaussianNoise,
-                                  HyperparameterInterpolator, get_extra_repr)
+                                  HyperparameterInterpolator, get_extra_repr,
+                                  format_source_lengths)
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -184,11 +185,11 @@ class PositionAttention(nn.Module):
         # sigma0 is 1 but we give it in as -sigma, so it's as if start at -1
         self.sigma_to_conf = ProbabilityConverter(is_temperature=True,
                                                   is_bias=True,
-                                                  initial_x=-1*self.initial_sigma)
+                                                  initial_x=-1 * self.initial_sigma)
 
-        self.mu0 = Parameter(torch.tensor(0.0)).to(device)
+        self.mu0 = Parameter(torch.tensor(0.0))
         # starting with sigma = 0 would strongly bias network
-        self.sigma0 = Parameter(torch.tensor(self.initial_sigma)).to(device)
+        self.sigma0 = Parameter(torch.tensor(self.initial_sigma))
 
         self.reset_parameters()
 
@@ -200,11 +201,11 @@ class PositionAttention(nn.Module):
         self.apply(weights_init)
 
         if IS_X05:
-            self.mu0 = Parameter(torch.tensor(0.5)).to(device)
+            self.mu0 = Parameter(torch.tensor(0.5))
         else:
             init_param(self.mu0, is_positive=True)
 
-        self.sigma0 = Parameter(torch.tensor(self.initial_sigma)).to(device)
+        self.sigma0 = Parameter(torch.tensor(self.initial_sigma))
 
         self.get_sigma.reset_parameters()
 
@@ -237,8 +238,10 @@ class PositionAttention(nn.Module):
         Args:
             decoder_outputs (torch.tensor): tensor of size (batch_size, n_steps,
                 hidden_size) containing the hidden activations of the coder.
-            source_lengths (list): list of the lengths of each source sentence
-                in the batch.
+            source_lengths (tuple(list of int, torch.FloatTesnor), optional): A
+                list that contains the lengths of sequences in the mini-batch. The
+                Tensor has the same information but is preinitialized on teh
+                correct device.
             step (int): current decoding step.
             mu_old (torch.tensor): tensor of size (batch_size, n_steps, 1)
                 containing last means of the positional attention. `None` for
@@ -254,9 +257,10 @@ class PositionAttention(nn.Module):
                 that are necessary for some hyperparamets.
         """
         batch_size, max_source_lengths, _ = decoder_outputs.size()
+        source_lengths_list, source_lengths_tensor = format_source_lengths(source_lengths)
 
         positioning_inputs, building_blocks = self._get_features(decoder_outputs,
-                                                                 source_lengths,
+                                                                 source_lengths_tensor,
                                                                  step,
                                                                  mu_old,
                                                                  sigma_old,
@@ -266,7 +270,7 @@ class PositionAttention(nn.Module):
         mu, sigma = self._compute_parameters(positioning_inputs,
                                              building_blocks,
                                              step,
-                                             source_lengths,
+                                             source_lengths_tensor,
                                              additional)
 
         # smaller sigma means more confident => - sigma
@@ -277,13 +281,13 @@ class PositionAttention(nn.Module):
         pos_confidence = pos_confidence.mean(dim=-1)
 
         rel_counter_encoder = renormalize_input_length(self.rel_counter.expand(batch_size, -1, 1),
-                                                       source_lengths,
+                                                       source_lengths_tensor,
                                                        self.max_len)
 
         pos_attn = pad_sequence([self.positioner(rel_counter_encoder[b, :length, :],
                                                  mu[b].squeeze(),
                                                  sigma[b].squeeze())
-                                 for b, length in enumerate(source_lengths)],
+                                 for b, length in enumerate(source_lengths_list)],
                                 batch_first=True)
 
         # new size = (batch, n_queries, n_keys)
@@ -291,7 +295,7 @@ class PositionAttention(nn.Module):
 
         return pos_attn, pos_confidence, mu, sigma
 
-    def _get_features(self, decoder_outputs, source_lengths, step, mu_old,
+    def _get_features(self, decoder_outputs, source_lengths_tensor, step, mu_old,
                       sigma_old, mean_content_old, mean_attn_old):
         """Gets the inputs and the buillding blocks for positioning. Together
         those will eb used to compute the parameters of the positioning function.
@@ -300,7 +304,7 @@ class PositionAttention(nn.Module):
 
         rel_counter_decoder = renormalize_input_length(self.rel_counter[step:step + 1
                                                                         ].expand(batch_size, 1),
-                                                       source_lengths,
+                                                       source_lengths_tensor,
                                                        self.max_len)
         abs_counter_decoder = (self.rel_counter[step:step + 1].expand(batch_size, 1) *
                                self.max_len)
@@ -313,7 +317,7 @@ class PositionAttention(nn.Module):
             sigma_old = sigma_old.squeeze(2)
 
         single_step = renormalize_input_length(self.single_step.expand(batch_size, 1),
-                                               source_lengths,
+                                               source_lengths_tensor,
                                                self.max_len)
 
         shared = [mu_old, mean_attn_old, rel_counter_decoder, single_step]
@@ -322,7 +326,7 @@ class PositionAttention(nn.Module):
 
         not_shared = [sigma_old,
                       abs_counter_decoder,
-                      torch.FloatTensor(source_lengths).unsqueeze(-1)]
+                      source_lengths_tensor.unsqueeze(-1)]
         additional_positioning_features = shared + not_shared
 
         positioning_inputs = torch.cat([decoder_outputs.squeeze(1)] +
@@ -340,7 +344,7 @@ class PositionAttention(nn.Module):
         return positioning_inputs, building_blocks
 
     def _compute_parameters(self, positioning_inputs, building_blocks, step,
-                            source_lengths, additional):
+                            source_lengths_tensor, additional):
         """Compute the parameters of the positioning function."""
         batch_size = positioning_inputs.size(0)
 
@@ -391,7 +395,7 @@ class PositionAttention(nn.Module):
                           torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
 
         if self.is_relative_sigma:
-            sigma = renormalize_input_length(sigma, source_lengths, 1)
+            sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
 
         return mu, sigma
 
@@ -442,7 +446,7 @@ class AttentionMixer(nn.Module):
 
         # should be under if not is_predict_conf (i.e net else)
         # but keeping while testing `additional_controller_features`
-        self.position_perc0 = Parameter(torch.tensor(0.5)).to(device)
+        self.position_perc0 = Parameter(torch.tensor(0.5))
 
         if not self.is_pos_perc_weight_conf:
             if is_mlps:
@@ -463,7 +467,7 @@ class AttentionMixer(nn.Module):
 
     def reset_parameters(self):
         self.apply(weights_init)
-        self.position_perc0 = Parameter(torch.tensor(0.5)).to(device)
+        self.position_perc0 = Parameter(torch.tensor(0.5))
 
     def extra_repr(self):
         return get_extra_repr(self,

@@ -2,7 +2,7 @@
 *.pyc
 *.swp
 *.egg-info
-
+..gitignore.icloud
 .DS_Store
 
 notebooks/*

@@ -6,7 +6,8 @@ from torch.nn.parameter import Parameter
 from .baseRNN import BaseRNN
 
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
-from seq2seq.util.helpers import ProbabilityConverter, get_rnn, get_extra_repr
+from seq2seq.util.helpers import (ProbabilityConverter, get_rnn, get_extra_repr,
+                                  format_source_lengths)
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,9 +43,10 @@ class EncoderRNN(BaseRNN):
     Inputs: inputs, input_lengths
         - **inputs**: list of sequences, whose length is the batch size and within
             which each sequence is a list of token IDs.
-        - **input_lengths** (list of int, optional): list that contains the lengths
-            of sequences in the mini-batch, it must be provided when using variable
-                length RNN (default: `None`)
+        - **input_lengths** (tuple(list of int, float.Tensor), optional): list
+            that contains the lengths of sequences in the mini-batch, it must be
+            provided when using variable length RNN. The Tensor has the same information
+            but is preinitialized on teh correct device. (default: `None`)
 
     Outputs: output, hidden
         - **output** (batch, seq_len, hidden_size): tensor containing the encoded
@@ -127,7 +129,7 @@ class EncoderRNN(BaseRNN):
         if not self.is_value and self.is_highway:
             if self.bidirectional_hidden_size != self.embedding_size:
                 raise ValueError("hidden_size should be equal embedding_size when using highway.")
-            self.carry = Parameter(torch.tensor(1.0)).to(device)
+            self.carry = Parameter(torch.tensor(1.0))
             self.carry_to_prob = ProbabilityConverter(initial_probability=initial_highway)
         # # # # # # # # # # # # # # # #
 
@@ -174,13 +176,19 @@ class EncoderRNN(BaseRNN):
 
         Args:
             input_var (batch, seq_len): tensor containing the features of the input sequence.
-            input_lengths (list of int, optional): A list that contains the lengths of sequences
-              in the mini-batch
+            input_lengths (tuple(list of int, torch.FloatTesnor), optional): A
+                list that contains the lengths of sequences in the mini-batch. The
+                Tensor has the same information but is preinitialized on teh
+                correct device.
 
         Returns: output, hidden
-            - **output** (batch, seq_len, hidden_size): variable containing the encoded features of the input sequence
-            - **hidden** (num_layers * num_directions, batch, hidden_size): variable containing the features in the hidden state h
+            - **output** (batch, seq_len, hidden_size): variable containing the
+                encoded features of the input sequence
+            - **hidden** (num_layers * num_directions, batch, hidden_size):
+                variable containing the features in the hidden state h
         """
+        input_lengths_list, input_lengths_tensor = format_source_lengths(input_lengths)
+
         if additional is None:
             additional = dict()
 
@@ -195,7 +203,8 @@ class EncoderRNN(BaseRNN):
 
         if self.variable_lengths:
             embedded_unpacked = embedded
-            embedded = nn.utils.rnn.pack_padded_sequence(embedded, input_lengths, batch_first=True)
+            embedded = nn.utils.rnn.pack_padded_sequence(embedded, input_lengths_list,
+                                                         batch_first=True)
 
         output, hidden = self.controller(embedded, hidden)
 
@@ -204,7 +213,7 @@ class EncoderRNN(BaseRNN):
             output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
 
         if self.is_key:
-            keys, additional = self.key_generator(output, input_lengths, additional)
+            keys, additional = self.key_generator(output, input_lengths_tensor, additional)
         else:
             keys = output
 

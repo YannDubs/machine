@@ -29,7 +29,7 @@ def _get_counter_size(is_abscounter, is_relcounter, is_rotcounters):
 
 
 def _get_counters(max_len, is_abscounter, is_relcounter, is_rotcounters,
-                  input_lengths, batch_size):
+                  input_lengths_tensor, batch_size):
     """Return the batch couters."""
     increments = torch.arange(max_len + 1).view(1, -1, 1).expand(batch_size, -1, 1)
 
@@ -39,11 +39,11 @@ def _get_counters(max_len, is_abscounter, is_relcounter, is_rotcounters,
 
     if is_relcounter:
         rel_counter = increments / max_len
-        rel_counter = renormalize_input_length(rel_counter, input_lengths, max_len)
+        rel_counter = renormalize_input_length(rel_counter, input_lengths_tensor, max_len)
 
     if is_rotcounters:
         angles = increments / max_len * math.pi
-        angles = renormalize_input_length(angles, input_lengths, max_len)
+        angles = renormalize_input_length(angles, input_lengths_tensor, max_len)
         rot_counters = torch.cat([torch.cos(angles), torch.sin(angles)], dim=2)
 
     if any(c.nelement() != 0 for c in (abs_counter, rel_counter, rot_counters)):
@@ -211,18 +211,19 @@ class BaseKeyQuery(BaseKeyValueQuery):
 
         return parrent_repr
 
-    def _get_counters(self, input_lengths, batch_size):
+    def _get_counters(self, input_lengths_tensor, batch_size):
         return _get_counters(self.max_len, self.is_abscounter, self.is_relcounter,
-                             self.is_rotcounters, input_lengths, batch_size)
+                             self.is_rotcounters, input_lengths_tensor, batch_size)
 
-    def forward(self, controller_out, input_lengths, additional):
+    def forward(self, controller_out, input_lengths_tensor, additional):
         """Generates the key or query.
 
         Args:
             controller_out (torch.tensor): tensor of size (batch_size, input_length,
                 hidden_size) containing the outputs of the controller (encoder
                 or decoder for key and query respectively).
-            input_lengths (list): list of the lengths of each input in the batch.
+            input_lengths_tensor (tensor.FloatTensor): list of the lengths of
+                each input in the batch.
             additional (dictionary): dictionary containing additional variables
                 that are necessary for some hyperparamets.
         """
@@ -234,8 +235,8 @@ class BaseKeyQuery(BaseKeyValueQuery):
         else:
             input_generator = controller_out
 
-        input_lengths = input_lengths if self.is_normalize_encoder else None
-        counters = self._get_counters(input_lengths, batch_size)
+        input_lengths_tensor = input_lengths_tensor if self.is_normalize_encoder else None
+        counters = self._get_counters(input_lengths_tensor, batch_size)
         if counters is not None:
             counters = counters[:, step:step + max_input_lengths, :]
 
