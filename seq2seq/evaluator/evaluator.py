@@ -3,7 +3,6 @@ from __future__ import print_function, division
 import torch
 import torchtext
 
-import seq2seq
 from seq2seq.loss import NLLLoss
 from seq2seq.metrics import WordAccuracy, SequenceAccuracy
 
@@ -117,14 +116,15 @@ class Evaluator(object):
         # loop over batches
         with torch.no_grad():
             for batch in batch_iterator:
-
                 input_variable, input_lengths, target_variable = get_batch_data(batch)
 
-                decoder_outputs, decoder_hidden, other = model(input_variable, input_lengths.tolist(), target_variable['decoder_output'])
+                decoder_outputs, decoder_hidden, other = model(input_variable, input_lengths.tolist(), target_variable)
 
-                losses = self.update_loss(losses, decoder_outputs, decoder_hidden, other, target_variable)
-
+                # Compute metric(s) over one batch
                 metrics = self.update_batch_metrics(metrics, other, target_variable)
+
+                # Compute loss(es) over one batch
+                losses = self.update_loss(losses, decoder_outputs, decoder_hidden, other, target_variable)
 
         model.train(previous_train_mode)
 

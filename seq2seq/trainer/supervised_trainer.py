@@ -2,10 +2,10 @@ from __future__ import division
 import logging
 import os
 import random
-import time
 import shutil
 
 import torch
+import torch.nn as nn
 import torchtext
 from torch import optim
 
@@ -14,10 +14,20 @@ from collections import defaultdict
 import seq2seq
 from seq2seq.evaluator import Evaluator
 from seq2seq.loss import NLLLoss
-from seq2seq.metrics import WordAccuracy
 from seq2seq.optim import Optimizer
 from seq2seq.util.checkpoint import Checkpoint
 from seq2seq.util.callbacks import Plotter, History
+from seq2seq.util.log import Log
+from seq2seq.util.helpers import mean
+
+
+def get_clipper(clip_norm=None, clip_value=None):
+    if clip_value is not None:
+        return lambda x: nn.utils.clip_grad_value_(x, clip_norm)
+    elif clip_norm is not None:
+        return lambda x: nn.utils.clip_grad_norm_(x, clip_norm)
+    else:
+        return None
 
 
 class SupervisedTrainer(object):
@@ -25,34 +35,56 @@ class SupervisedTrainer(object):
     supervised setting.
 
     Args:
-        expt_dir (optional, str): experiment Directory to store details of the experiment,
-            by default it makes a folder in the current directory to store the details (default: `experiment`).
-        loss (list, optional): list of seq2seq.loss.Loss objects for training (default: [seq2seq.loss.NLLLoss])
-        metrics (list, optional): list of seq2seq.metric.metric objects to be computed during evaluation
+        expt_dir (optional, str): experiment Directory to store details of the
+            experiment, by default it makes a folder in the current directory to
+            store the details (default: `experiment`).
+        loss (list, optional): list of seq2seq.loss.Loss objects for training
+            (default: [seq2seq.loss.NLLLoss])
+        metrics (list, optional): list of seq2seq.metric.metric objects to be
+            computed during evaluation
         batch_size (int, optional): batch size for experiment, (default: 64)
         checkpoint_every (int, optional): number of epochs to checkpoint after, (default: 100)
         print_every (int, optional): number of iterations to print after, (default: 100)
-        early_stopper (EarlyStopping, optional): Early stopper that will stop if no improvements
-            for a certian amount of time. Only used if dev_data given. Should have mode="min". (default: None)
+        early_stopper (EarlyStopping, optional): Early stopper that will stop if
+            no improvements for a certian amount of time. Only used if dev_data
+            given. Should have mode="min". (default: None)
+        clip_norm (float, optional): L2 Norm to which to clip the gradients.
+            Good default: 1. (default: None)
+        clip_value (float, optional): Values to which to clip the gradients.
+            Good default: 0.5. (default: None)
     """
 
-    def __init__(self, expt_dir='experiment', loss=[NLLLoss()], loss_weights=None, metrics=[], batch_size=64, eval_batch_size=128,
-                 random_seed=None, checkpoint_every=100, print_every=100, early_stopper=None, anneal_middropout=0, min_middropout=0.01):
+    def __init__(self,
+                 expt_dir='experiment',
+                 loss=[NLLLoss()],
+                 loss_weights=None,
+                 metrics=[],
+                 batch_size=64,
+                 eval_batch_size=128,
+                 random_seed=None,
+                 checkpoint_every=100,
+                 print_every=100,
+                 early_stopper=None,
+                 clip_norm=None,
+                 clip_value=None,
+                 loss_weight_updater=None):
         self._trainer = "Simple Trainer"
         self.random_seed = random_seed
         if random_seed is not None:
             random.seed(random_seed)
             torch.manual_seed(random_seed)
-        k = NLLLoss()
+
         self.loss = loss
         self.metrics = metrics
         self.loss_weights = loss_weights or len(loss) * [1.]
-        self.evaluator = Evaluator(loss=self.loss, metrics=self.metrics, batch_size=eval_batch_size)
+        self.evaluator = Evaluator(loss=self.loss,
+                                   metrics=self.metrics,
+                                   batch_size=eval_batch_size)
         self.optimizer = None
         self.checkpoint_every = checkpoint_every
         self.print_every = print_every
-        self.anneal_middropout = anneal_middropout
-        self.min_middropout = 0 if self.anneal_middropout == 0 else min_middropout
+        self.clipper = get_clipper(clip_norm, clip_norm)
+        self.loss_weight_updater = loss_weight_updater
 
         self.early_stopper = early_stopper
         if early_stopper is not None:
@@ -67,32 +99,56 @@ class SupervisedTrainer(object):
 
         self.logger = logging.getLogger(__name__)
 
-    def _train_batch(self, input_variable, input_lengths, target_variable, model, teacher_forcing_ratio, mid_dropout_p=0):
+    def _train_batch(self, input_variable, input_lengths, target_variable,
+                     model, teacher_forcing_ratio, confusers=dict()):
         loss = self.loss
 
         # Forward propagation
-        decoder_outputs, decoder_hidden, other = model(input_variable, input_lengths, target_variable['decoder_output'],
-                                                       teacher_forcing_ratio=teacher_forcing_ratio, mid_dropout_p=mid_dropout_p)
+        decoder_outputs, decoder_hidden, other = model(input_variable,
+                                                       input_lengths,
+                                                       target_variable,
+                                                       teacher_forcing_ratio=teacher_forcing_ratio,
+                                                       confusers=confusers)
 
-        losses = self.evaluator.compute_batch_loss(decoder_outputs, decoder_hidden, other, target_variable)
+        losses = self.evaluator.compute_batch_loss(decoder_outputs,
+                                                   decoder_hidden,
+                                                   other,
+                                                   target_variable)
 
         # Backward propagation
-        for i, loss in enumerate(losses[:-1], 0):
+        for i, loss in enumerate(losses, 0):
+            ### FOR REGULARIZATION BU STILL WORK IN PROGRESS ###
+            if i == 0 and "losses" in other:
+                other_losses = other.pop("losses")
+                for k, additional_loss in other_losses.items():
+                    loss.add_loss(mean(additional_loss))
+            #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
 
-        losses[-1].scale_loss(self.loss_weights[-1])
-        losses[-1].backward()
+        for _, confuser in confusers.items():
+            confuser.backward(retain_graph=True, main_loss=loss.get_loss())
+
+        if self.clipper is not None:
+            self.clipper(model.parameters())
 
         self.optimizer.step()
         model.zero_grad()
 
-        return losses
+        for _, confuser in confusers.items():
+            confuser.step_discriminator()
+
+        return losses, other
 
     def _train_epoches(self, data, model, n_epochs, start_epoch, start_step,
-                       dev_data=None, monitor_data=[], teacher_forcing_ratio=0,
-                       top_k=5):
+                       dev_data=None,
+                       monitor_data=[],
+                       teacher_forcing_ratio=0,
+                       top_k=5,
+                       confusers=dict()):
+
         log = self.logger
+        others = dict()
 
         print_loss_total = defaultdict(float)  # Reset every print_every
         epoch_loss_total = defaultdict(float)  # Reset every epoch
@@ -114,11 +170,12 @@ class SupervisedTrainer(object):
 
         # store initial model to be sure at least one model is stored
         val_data = dev_data or data
-
         losses, metrics = self.evaluator.evaluate(model, val_data, self.get_batch_data)
 
         total_loss, log_msg, model_name = self.get_losses(losses, metrics, step)
+        log.info(log_msg)
 
+        logs = Log()
         loss_best = top_k * [total_loss]
         best_checkpoints = top_k * [None]
         best_checkpoints[0] = model_name
@@ -127,12 +184,15 @@ class SupervisedTrainer(object):
                    optimizer=self.optimizer,
                    epoch=start_epoch, step=start_step,
                    input_vocab=data.fields[seq2seq.src_field_name].vocab,
-                   output_vocab=data.fields[seq2seq.tgt_field_name].vocab).save(self.expt_dir, name=model_name)
+                   output_vocab=data.fields[seq2seq.tgt_field_name].vocab
+                   ).save(self.expt_dir, name=model_name)
 
         for epoch in range(start_epoch, n_epochs + 1):
-            mid_dropout_p = max(self.min_middropout, self.anneal_middropout**epoch)
+            model.epoch = epoch
 
-            log.debug("Epoch: %d, Step: %d" % (epoch, step))
+            if epoch % 3 == 0:
+                print("Epoch: %d, Step: %d" % (epoch, step))
+            log.info("Epoch: %d, Step: %d" % (epoch, step))
 
             batch_generator = batch_iterator.__iter__()
 
@@ -140,20 +200,38 @@ class SupervisedTrainer(object):
             for _ in range((epoch - 1) * steps_per_epoch, step):
                 next(batch_generator)
 
+            other_single_epoch = dict()
             model.train(True)
-            for batch in batch_generator:
+            i_visualized = 0
+            for i_batch, batch in enumerate(batch_generator):
                 step += 1
                 step_elapsed += 1
+                model.training_step = step
+
+                if self.loss_weight_updater is not None:
+                    for l in self.loss:
+                        l.update_weights(self.loss_weight_updater(model.training))
 
                 input_variables, input_lengths, target_variables = self.get_batch_data(batch)
 
-                # compute batch loss
-                losses = self._train_batch(input_variables,
-                                           input_lengths.tolist(),
-                                           target_variables,
-                                           model,
-                                           teacher_forcing_ratio,
-                                           mid_dropout_p=mid_dropout_p)
+                losses, other_single_batch = self._train_batch(input_variables,
+                                                               input_lengths.tolist(),
+                                                               target_variables,
+                                                               model,
+                                                               teacher_forcing_ratio,
+                                                               confusers=confusers)
+
+                # # # DEV MODE # # #
+                if "visualize" in other_single_batch and len(other_single_batch["visualize"]) != 0:
+                    other_single_epoch["visualize"] = other_single_epoch.get("visualize", dict())
+                    for k, v in other_single_batch["visualize"].items():
+                        # computes rolling mean
+                        sum_previous_values = (other_single_epoch["visualize"].get(k, 0) *
+                                               i_visualized)
+                        other_single_epoch["visualize"][k] = (sum_previous_values + mean(v)
+                                                              ) / (i_visualized + 1)
+                    i_visualized += 1
+                # # # # # # # # # # #
 
                 # Record average loss
                 for loss in losses:
@@ -168,20 +246,26 @@ class SupervisedTrainer(object):
                         print_loss_avg[name] = print_loss_total[name] / self.print_every
                         print_loss_total[name] = 0
 
-                    train_log_msg = ' '.join(['%s: %.4f' % (loss.log_name, loss.get_loss()) for loss in losses])
-
                     m_logs = {}
+                    train_losses, train_metrics = self.evaluator.evaluate(model, data, self.get_batch_data)
+                    train_loss, train_log_msg, model_name = self.get_losses(train_losses, train_metrics, step)
+                    logs.write_to_log('Train', train_losses, train_metrics, step)
+                    logs.update_step(step)
+
+                    m_logs['Train'] = train_log_msg
+
                     # compute vals for all monitored sets
                     for m_data in monitor_data:
                         losses, metrics = self.evaluator.evaluate(model, monitor_data[m_data], self.get_batch_data)
                         total_loss, log_msg, model_name = self.get_losses(losses, metrics, step)
-                        m_logs[m_data] = ' '.join(['%s: %.4f' % (loss.log_name, loss.get_loss()) for loss in losses])
+                        m_logs[m_data] = log_msg
+                        logs.write_to_log(m_data, losses, metrics, step)
 
-                    all_losses = ' '.join(['%s %s' % (name, m_logs[name]) for name in m_logs])
+                    all_losses = ' '.join(['%s:\t %s\n' % (os.path.basename(name), m_logs[name])
+                                           for name in m_logs])
 
-                    log_msg = 'Progress %d%%, Train %s, %s' % (
+                    log_msg = 'Progress %d%%, %s' % (
                         step / total_steps * 100,
-                        train_log_msg,
                         all_losses)
 
                     log.info(log_msg)
@@ -197,7 +281,8 @@ class SupervisedTrainer(object):
                         index_max = loss_best.index(max_eval_loss)
                         # rm prev model
                         if best_checkpoints[index_max] is not None:
-                            shutil.rmtree(os.path.join(self.expt_dir, best_checkpoints[index_max]))
+                            shutil.rmtree(os.path.join(self.expt_dir,
+                                                       best_checkpoints[index_max]))
                         best_checkpoints[index_max] = model_name
                         loss_best[index_max] = total_loss
 
@@ -206,7 +291,15 @@ class SupervisedTrainer(object):
                                    optimizer=self.optimizer,
                                    epoch=epoch, step=step,
                                    input_vocab=data.fields[seq2seq.src_field_name].vocab,
-                                   output_vocab=data.fields[seq2seq.tgt_field_name].vocab).save(self.expt_dir, name=model_name)
+                                   output_vocab=data.fields[seq2seq.tgt_field_name].vocab
+                                   ).save(self.expt_dir, name=model_name)
+
+            # # # DEV MODE # # #
+            for k_ext, v_ext in other_single_epoch.items():
+                others[k_ext] = others.get(k_ext, dict())
+                for k_int, v_int in v_ext.items():
+                    others[k_ext][k_int] = others[k_ext].get(k_int, list()) + [v_int]
+            # # # # # # # # # # #
 
             if step_elapsed == 0:
                 continue
@@ -222,8 +315,8 @@ class SupervisedTrainer(object):
             loss_total_train, log_, model_name = self.get_losses(losses, metrics, step)
 
             if dev_data is not None:
-                losses, metrics = self.evaluator.evaluate(model, dev_data, self.get_batch_data)
-                loss_total_dev, log_, model_name = self.get_losses(losses, metrics, step)
+                dev_losses, metrics = self.evaluator.evaluate(model, dev_data, self.get_batch_data)
+                loss_total_dev, log_, model_name = self.get_losses(dev_losses, metrics, step)
 
                 self.optimizer.update(loss_total_dev, epoch)
                 log_msg += ", Dev " + log_
@@ -237,18 +330,31 @@ class SupervisedTrainer(object):
                 self.history.step(loss_total_train, loss_total_dev)
                 if self.plotter is not None:
                     self.plotter.step(loss_total_train, loss_total_dev)
+
             else:
-                self.optimizer.update(sum(epoch_loss_avg.values()), epoch)  # TODO check if this makes sense!
+                self.optimizer.update(epoch_loss_avg, epoch)  # TODO check if this makes sense!
 
             log.info(log_msg)
 
         if self.plotter is not None:
             self.plotter(start_epoch=start_epoch)
 
-    def train(self, model, data, num_epochs=5,
-              resume=False, dev_data=None, monitor_data={},
-              optimizer=None, teacher_forcing_ratio=0,
-              learning_rate=0.001, checkpoint_path=None, top_k=5, is_plot=False):
+        return logs, others
+
+    def train(self, model, data,
+              num_epochs=5,
+              resume=False,
+              dev_data=None,
+              monitor_data={},
+              optimizer=None,
+              teacher_forcing_ratio=0,
+              learning_rate=0.001,
+              checkpoint_path=None,
+              top_k=5,
+              is_plot=False,
+              optimizer_kwargs={},
+              is_oneshot=False,
+              confusers=dict()):
         """ Run training for a given model.
 
         Args:
@@ -264,13 +370,11 @@ class SupervisedTrainer(object):
             learing_rate (float, optional): learning rate used by the optimizer (default 0.001)
             checkpoint_path (str, optional): path to load checkpoint from in case training should be resumed
             top_k (int): how many models should be stored during training
-
         Returns:
             model (seq2seq.models): trained model.
         """
         # If training is set to resume
-
-        if resume:
+        if resume or is_oneshot:
             resume_checkpoint = Checkpoint.load(checkpoint_path)
             model = resume_checkpoint.model
             self.optimizer = resume_checkpoint.optimizer
@@ -280,10 +384,15 @@ class SupervisedTrainer(object):
             defaults = resume_optim.param_groups[0]
             defaults.pop('params', None)
             defaults.pop('initial_lr', None)
+            # SHOULD ALSO GIVE , **optimizer_kwargs ????????????????
             self.optimizer.optimizer = resume_optim.__class__(model.parameters(), **defaults)
 
-            start_epoch = resume_checkpoint.epoch
-            step = resume_checkpoint.step
+            if is_oneshot:
+                start_epoch = 0
+                step = 0
+            else:
+                start_epoch = resume_checkpoint.epoch
+                step = resume_checkpoint.step
         else:
             start_epoch = 1
             step = 0
@@ -295,24 +404,59 @@ class SupervisedTrainer(object):
                           None: optim.Adam}
                 return optims[optim_name]
 
-            self.optimizer = Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate),
-                                       max_grad_norm=5)
+            def instantiate_optim(params):
+                return Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate, **optimizer_kwargs),
+                                 max_grad_norm=5)
+
+            self.optimizer = instantiate_optim(model.parameters())
+
+            """
+            for _, confuser in confusers.items():
+                confuser.set_optim(instantiate_optim)
+            """
 
         self.history = History(num_epochs)
         self.plotter = Plotter() if is_plot and dev_data is not None else None
         self.logger.info("Optimizer: %s, Scheduler: %s" % (self.optimizer.optimizer, self.optimizer.scheduler))
 
-        self._train_epoches(data, model, num_epochs,
-                            start_epoch, step, dev_data=dev_data,
-                            monitor_data=monitor_data,
-                            teacher_forcing_ratio=teacher_forcing_ratio,
-                            top_k=top_k)
-        return model, self.history
+        logs, other = self._train_epoches(data, model, num_epochs,
+                                          start_epoch, step,
+                                          dev_data=dev_data,
+                                          monitor_data=monitor_data,
+                                          teacher_forcing_ratio=teacher_forcing_ratio,
+                                          top_k=top_k,
+                                          confusers=confusers)
+        return model, logs, self.history, other
 
     @staticmethod
     def get_batch_data(batch):
         input_variables, input_lengths = getattr(batch, seq2seq.src_field_name)
-        target_variables = {'decoder_output': getattr(batch, seq2seq.tgt_field_name)}
+        target_variables = {'decoder_output': getattr(batch, seq2seq.tgt_field_name),
+                            'encoder_input': input_variables}  # The k-grammar metric needs to have access to the inputs
+
+        # If available, also get provided attentive guidance data
+        if hasattr(batch, seq2seq.attn_field_name):
+            attention_target = getattr(batch, seq2seq.attn_field_name)
+
+            # When we ignore output EOS, the sequence target will not contain the EOS, but if present
+            # in the data, the attention indices might still. We should remove this.
+            target_length = target_variables['decoder_output'].size(1)
+            attn_length = attention_target.size(1)
+
+            # If the attention sequence is exactly 1 longer than the output sequence, the EOS attention
+            # index is present.
+            if attn_length == target_length + 1:
+                # First we replace each of these indices with a -1. This makes sure that the hard
+                # attention method will not attend to an input that might not be present (the EOS)
+                # We need this if there are attentions of multiple lengths in a bath
+                attn_eos_indices = input_lengths.unsqueeze(1) + 1
+                attention_target = attention_target.scatter_(dim=1, index=attn_eos_indices, value=-1)
+
+                # Next we also make sure that the longest attention sequence in the batch is truncated
+                attention_target = attention_target[:, :-1]
+
+            target_variables['attention_target'] = attention_target
+
         return input_variables, input_lengths, target_variables
 
     @staticmethod

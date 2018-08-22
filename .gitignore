@@ -3,6 +3,8 @@
 *.swp
 *.egg-info
 
+.DS_Store
+
 notebooks/*
 venv*
 .ipynb_checkpoints/
