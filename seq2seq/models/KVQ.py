@@ -123,6 +123,8 @@ class BaseKeyQuery(BaseKeyValueQuery):
             annealed input dropout.
         annealed_noise_kwargs (float, optional): additional arguments to the
             annealed input noise.
+        annealed_dropout_kwargs (float, optional): additional arguments to the
+            annealed output dropout.
         annealed_noise_output_kwargs (float, optional): additional arguments to
             the annealed output noise.
         kwargs:
@@ -141,6 +143,7 @@ class BaseKeyQuery(BaseKeyValueQuery):
                  is_weight_norm_rnn=False,
                  annealed_dropout_kwargs={},
                  annealed_noise_kwargs={},
+                 annealed_dropout_output_kwargs={},
                  annealed_noise_output_kwargs={},
                  **kwargs):
 
@@ -186,6 +189,7 @@ class BaseKeyQuery(BaseKeyValueQuery):
                 self.generator = nn.Linear(self.input_size_with_counters,
                                            self.output_size_without_counters)
 
+        self.dropout_output = AnnealedDropout(**annealed_dropout_output_kwargs)
         self.noise_output = AnnealedGaussianNoise(**annealed_noise_output_kwargs)
 
         self.reset_parameters()
@@ -255,6 +259,7 @@ class BaseKeyQuery(BaseKeyValueQuery):
         else:
             kq = self.generator(input_generator)
 
+        kq = self.dropout_output(kq, is_update=(step == 0))
         kq = self.noise_output(kq, is_update=(step == 0))
 
         if self.is_postcounter:

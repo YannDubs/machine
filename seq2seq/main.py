@@ -83,6 +83,7 @@ def get_seq2seq_model(src,
                       is_kqrnn=False,
                       anneal_kq_dropout_input=0,
                       anneal_kq_noise_input=0,
+                      anneal_kq_dropout_output=0,
                       anneal_kq_noise_output=0,
                       is_normalize_encoder=True,
                       is_abscounter=False,
@@ -198,6 +199,10 @@ def get_seq2seq_model(src,
             the input of the key and query generator. This parameter
             defines the percentage of training calls before the noise model should
             reach the final relative standard deviation.
+        anneal_kq_dropout_output (float, optional): annealed dropout to
+            the output of the key and query generator. This parameter
+            defines the percentage of training calls before the model should reach
+            the final dropout.
         anneal_kq_noise_output (float, optional): annealed noise to
             the output of the key and query generator. This parameter
             defines the percentage of training calls before the noise model should
@@ -212,8 +217,7 @@ def get_seq2seq_model(src,
             by a relative counter between 0 and 180.
         is_postcounter (bool, optional): whether to append the counters to the
             output of the generator instead of the inputs.
-        is_position_attn (bool, optional): whether to use positional attention
-            in addition to the content one.
+        is_position_attn (bool, optional): whether to use positional attention.
         positioning_method ({"gaussian",
             "laplace"}, optional): name of the positional distribution.
             `laplace` is more human plausible but `gaussian` works best.
@@ -231,9 +235,10 @@ def get_seq2seq_model(src,
             the final `min_sigma`.
         is_building_blocks_mu (bool, optional): whether to use building blocks to
             generate the positional mu rather than using a normal MLP.
-
-        is_bb_bias # TO DOC ###
-
+        is_bb_bias (bool, optional): adding a bias term to the building blocks.
+            THis has the advantage of letting the network go to absolut positions
+            (ex: middle, end, ...). THe disadvantage being that the model will often
+            stop using other building blocks and thus be less general.
         is_l1_bb_weights (bool, optional): whether to use a l1 regularization
             on the postional attention mu's building block weights. This can
             be usefull if the building blocks are gihly correlyted.
@@ -262,6 +267,7 @@ def get_seq2seq_model(src,
 
     # Encoder
     kq_annealed_dropout_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_dropout_input))
+    kq_annealed_dropout_output_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_dropout_output))
     kq_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_noise_input))
     kq_annealed_noise_output_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_noise_output))
 
@@ -278,6 +284,7 @@ def get_seq2seq_model(src,
                       is_weight_norm_rnn=is_weight_norm_rnn,
                       annealed_dropout_kwargs=kq_annealed_dropout_kwargs,
                       annealed_noise_kwargs=kq_annealed_noise_kwargs,
+                      annealed_dropout_output_kwargs=kq_annealed_dropout_output_kwargs,
                       annealed_noise_output_kwargs=kq_annealed_noise_output_kwargs,
                       is_dev_mode=is_dev_mode)
 
@@ -320,12 +327,12 @@ def get_seq2seq_model(src,
 
     bb_weights_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_bb_weights_noise),
                                             initial_sigma=0.1,
-                                            final_sigma=0.001,
-                                            mode="geometric")
+                                            final_sigma=0,
+                                            mode="linear")
     bb_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_bb_noise),
                                     initial_sigma=0.1,
-                                    final_sigma=0.001,
-                                    mode="geometric")
+                                    final_sigma=0,
+                                    mode="linear")
 
     position_kwargs = dict(is_recursive=is_posrnn,
                            positioning_method=positioning_method,
@@ -404,7 +411,7 @@ def train(train_path,
           is_predict_eos=True,
           teacher_forcing_ratio=0.2,
           batch_size=32,
-          eval_batch_size=128,
+          eval_batch_size=256,
           lr=0.001,
           save_every=100,
           print_every=100,
@@ -482,6 +489,8 @@ def train(train_path,
         content_method ({"dot", "hard", "mlp"}, optional): attention function.
         is_basic_init (bool, optional): Whether to use the basic uniform initialization
             instead of the more "state of the art", layer dependent initialization.
+            Should not be used, because many parameters are th probabilities,
+            and you don't want to start a probability at 0 but 0.5.
         is_amsgrad (bool, optional): Whether to use amsgrad, which is supposed
             to make Adam more stable : "On the Convergence of Adam and Beyond".
         is_confuse_query (bool, optional): whether to remove the ability of the

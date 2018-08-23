@@ -545,6 +545,8 @@ class AnnealedDropout(nn.Dropout):
 
     def forward(self, x, is_update=True):
         self.p = self.get_dropout_p(is_update and self.training)
+        if self.p == 0:
+            return x
         return super().forward(x)
 
 
