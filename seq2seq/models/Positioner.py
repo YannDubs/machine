@@ -212,7 +212,7 @@ class PositionAttention(nn.Module):
             init_param(self.mu0, is_positive=True)
 
         sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 1.0
-        self.sigma0 = Parameter(torch.tensor(sigma0)).to(device)
+        self.sigma0 = Parameter(torch.tensor(sigma0))
 
         self.get_sigma.reset_parameters()
 
