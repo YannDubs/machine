@@ -5,9 +5,7 @@ import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 import torch.nn.functional as F
-from torch.autograd import Variable
 from torch.nn.utils import weight_norm
-
 from torch.nn import RNNBase
 
 from seq2seq.util.initialization import linear_init, get_hidden0
