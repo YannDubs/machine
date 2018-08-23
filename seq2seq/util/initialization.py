@@ -101,7 +101,7 @@ def get_hidden0(rnn):
     if rnn.bidirectional:
         n_stacked *= 2
 
-    hidden = Parameter(torch.randn(n_stacked, 1, rnn.hidden_size)).to(device)
+    hidden = Parameter(torch.randn(n_stacked, 1, rnn.hidden_size))
     init_param(hidden, activation="sigmoid")
 
     if isinstance(rnn, nn.LSTM):
@@ -118,7 +118,7 @@ def replicate_hidden0(hidden, batch_size):
     if isinstance(hidden, tuple):
         return replicate_hidden0(hidden[0], batch_size), replicate_hidden0(hidden[1], batch_size)
 
-    return hidden.expand(hidden.size(0), batch_size, hidden.size(2))
+    return hidden.expand(hidden.size(0), batch_size, hidden.size(2)).contiguous()
 
 
 def weights_init(module):

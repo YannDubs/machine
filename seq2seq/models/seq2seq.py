@@ -1,9 +1,12 @@
 """ Seq2seq class. """
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from seq2seq.util.helpers import (AnnealedGaussianNoise, AnnealedDropout,
                                   get_extra_repr)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Seq2seq(nn.Module):
@@ -40,9 +43,9 @@ class Seq2seq(nn.Module):
 
     def __init__(self, encoder, decoder,
                  decode_function=F.log_softmax,
-                 mid_dropout_kwargs={}, # TO DOC
-                 mid_noise_kwargs={}, # TO DOC
-                 is_dev_mode=False): # TO DOC
+                 mid_dropout_kwargs={},  # TO DOC
+                 mid_noise_kwargs={},  # TO DOC
+                 is_dev_mode=False):  # TO DOC
         super(Seq2seq, self).__init__()
         self.is_dev_mode = is_dev_mode
 
@@ -76,6 +79,12 @@ class Seq2seq(nn.Module):
                 target_variables=None,
                 teacher_forcing_ratio=0,
                 confusers=dict()):
+
+        # precomputes a float tensor of the source lengths as it will be used a lot
+        # removes the need of having to change the variable from CPU to GPU
+        # multiple times at each iter
+        input_lengths_tensor = torch.FloatTensor(input_lengths).to(device)
+        input_lengths = (input_lengths, input_lengths_tensor)
 
         # Unpack target variables
         try:

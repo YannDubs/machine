@@ -6,9 +6,7 @@ import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 import torch.nn.functional as F
-from torch.autograd import Variable
 from torch.nn.utils import weight_norm
-
 from torch.nn import RNNBase
 
 from seq2seq.util.initialization import linear_init, get_hidden0
@@ -65,21 +63,24 @@ def renormalize_input_length(x, input_lengths, max_len=1):
     """Given a tensor that was normalized by a constant value across the whole
         batch, normalizes it by a diferent value for each example in the batch.
 
+    Should preallocate the lengths only once on GPU to speed up.
+
     Args:
         x (torch.tensor) tensor to normalize of any dimension and size as long
             as the batch dimension is the first one.
         input_lengths (list or torch.tensor) values used for normalizing the
             input, length should be `batch_size`.
-        mac_len (float, optional) previous constant value that was used to
+        max_len (float, optional) previous constant value that was used to
             normalize the input.
     """
     if input_lengths is None:
         return x
     else:
-        lengths = torch.FloatTensor(input_lengths)
-        while lengths.dim() < x.dim():
-            lengths = lengths.unsqueeze(-1)
-        return (x * max_len) / lengths
+        if not isinstance(input_lengths, torch.Tensor):
+            input_lengths = torch.FloatTensor(input_lengths).to(device)
+        while input_lengths.dim() < x.dim():
+            input_lengths = input_lengths.unsqueeze(-1)
+        return (x * max_len) / input_lengths
 
         def rm_prefix(s, prefix):
             """Removes the prefix of a string if it exists."""
@@ -231,14 +232,14 @@ class ProbabilityConverter(nn.Module):
 
     def reset_parameters(self):
         if self.is_temperature:
-            self.temperature = Parameter(torch.tensor(self.initial_temperature)).to(device)
+            self.temperature = Parameter(torch.tensor(self.initial_temperature))
         else:
             self.temperature = torch.tensor(self.initial_temperature).to(device)
 
         initial_bias = self._probability_to_bias(self.initial_probability,
                                                  initial_x=self.initial_x)
         if self.is_bias:
-            self.bias = Parameter(torch.tensor(initial_bias)).to(device)
+            self.bias = Parameter(torch.tensor(initial_bias))
         else:
             self.bias = torch.tensor(initial_bias).to(device)
 
@@ -279,9 +280,9 @@ class ProbabilityConverter(nn.Module):
         p = (p - self.min_p) / range_p
         p = torch.tensor(p, dtype=torch.float)
         if self.activation == "sigmoid":
-            bias = torch.log(p / (1 - p)) - initial_x * self.temperature
+            bias = torch.log(p / (1 - p)) - initial_x * self.initial_temperature
         elif self.activation == "hard-sigmoid" or self.activation == "leaky-hard-sigmoid":
-            bias = (p - 0.5) / 0.2 - initial_x * self.temperature
+            bias = (p - 0.5) / 0.2 - initial_x * self.initial_temperature
         else:
             raise ValueError("Unkown activation : {}".format(self.activation))
 
@@ -349,12 +350,12 @@ class GaussianNoise(nn.Module):
         super().__init__()
         self.sigma = sigma
         self.is_relative_detach = is_relative_detach
+        self.noise = torch.tensor(0.0).to(device)
 
     def forward(self, x):
         if self.training and self.sigma != 0:
             scale = self.sigma * x.detach() if self.is_relative_detach else self.sigma * x
-            sampled_noise = torch.randn_like(x) * scale
-            sampled_noise.to(device)
+            sampled_noise = self.noise.repeat(*x.size()).normal_() * scale
             x = x + sampled_noise
         return x
 
@@ -555,3 +556,12 @@ class Rate2Steps:
 
     def __call__(self, rate):
         return math.ceil(rate * self.total_training_calls)
+
+
+def format_source_lengths(source_lengths):
+    if isinstance(source_lengths, tuple):
+        source_lengths_list, source_lengths_tensor = source_lengths
+    else:
+        source_lengths_list, source_lengths_tensor = None, None
+
+    return source_lengths_list, source_lengths_tensor
