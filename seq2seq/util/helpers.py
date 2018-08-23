@@ -1,5 +1,6 @@
 import sys
 import inspect
+import math
 
 import torch
 import torch.nn as nn
@@ -13,6 +14,13 @@ from torch.nn import RNNBase
 from seq2seq.util.initialization import linear_init, get_hidden0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def clamp(x, minimum=0, maximum=1, is_leaky=False, negative_slope=0.001):
+    """Clamps a tensor to the given [minimum, maximum] (leaky) bound."""
+    lower_bound = negative_slope * x if is_leaky else minimum
+    upper_bound = maximum + negative_slope * x if is_leaky else maximum
+    return torch.max(lower_bound, torch.min(x, upper_bound))
 
 
 def indentity(x):
@@ -474,7 +482,7 @@ class AnnealedGaussianNoise(GaussianNoise):
     """
 
     def __init__(self,
-                 initial_sigma=0.3,
+                 initial_sigma=0.2,
                  final_sigma=0,
                  n_steps_interpolate=0,
                  mode="linear",
@@ -537,3 +545,13 @@ class AnnealedDropout(nn.Dropout):
     def forward(self, x, is_update=True):
         self.p = self.get_dropout_p(is_update and self.training)
         return super().forward(x)
+
+
+class Rate2Steps:
+    """Converts interpolating rates to steps useful for annealing."""
+
+    def __init__(self, total_training_calls):
+        self.total_training_calls = total_training_calls
+
+    def __call__(self, rate):
+        return math.ceil(rate * self.total_training_calls)

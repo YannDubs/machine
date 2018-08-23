@@ -5,13 +5,13 @@ import torch.nn as nn
 import torch
 import numpy as np
 
-from seq2seq.util.helpers import HyperparameterInterpolator
+from seq2seq.util.helpers import HyperparameterInterpolator, Rate2Steps
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _get_loss(loss_name, token_loss_weight, tgt):
+def _get_loss(loss_name, token_loss_weight, tgt, **kwargs):
     loss_weight = 1.0
     if isinstance(loss_name, tuple):
         loss_name, loss_weight = loss_name
@@ -19,16 +19,18 @@ def _get_loss(loss_name, token_loss_weight, tgt):
     output_pad = tgt.vocab.stoi[tgt.pad_token]
     loss_name = loss_name.lower()
     if loss_name == "nll":
-        return NLLLoss(ignore_index=output_pad, weight=token_loss_weight), loss_weight
+        loss = NLLLoss(ignore_index=output_pad, weight=token_loss_weight, **kwargs)
     elif loss_name == "perplexity":
-        return Perplexity(ignore_index=output_pad, weight=token_loss_weight), loss_weight
+        loss = Perplexity(ignore_index=output_pad, weight=token_loss_weight, **kwargs)
     elif loss_name == "attention loss":
-        return AttentionLoss(ignore_index=output_pad, weight=token_loss_weight), loss_weight
+        loss = AttentionLoss(ignore_index=output_pad, weight=token_loss_weight, **kwargs)
     else:
         raise ValueError("Unkown loss : {}".format(loss_name))
 
+    return loss, loss_weight
 
-def get_losses(loss_names, tgt, is_predict_eos, eos_weight=None):
+
+def get_losses(loss_names, tgt, is_predict_eos, eos_weight=None, **kwargs):
     """Gets a list of losses.
 
     loss_names (list, optional): list where each element is either the name of
@@ -53,7 +55,7 @@ def get_losses(loss_names, tgt, is_predict_eos, eos_weight=None):
     losses = []
     loss_weights = []
     for loss_name in loss_names:
-        loss, loss_weight = _get_loss(loss_name, token_loss_weight, tgt)
+        loss, loss_weight = _get_loss(loss_name, token_loss_weight, tgt, **kwargs)
         loss.to(device)
         losses.append(loss)
         loss_weights.append(loss_weight)
@@ -122,7 +124,7 @@ class Loss(object):
             sub-classes.
     """
 
-    def __init__(self, name, log_name, inputs, target, criterion):
+    def __init__(self, name, log_name, inputs, target, criterion, total_training_calls=None):
         self.name = name
         self.log_name = log_name
         self.inputs = inputs
@@ -135,6 +137,9 @@ class Loss(object):
         # normalization term
         self.norm_term = 0
         self.counter = 0
+
+        self.rate2steps = (Rate2Steps(total_training_calls)
+                           if total_training_calls is not None else None)
 
     def reset(self):
         """ Reset the accumulated loss. """
@@ -207,11 +212,16 @@ class Loss(object):
 
     def add_loss(self, other_loss,
                  weight=None,
-                 max_proportion=1e-4,
-                 i_start_adding=100,
+                 max_proportion=1e-2,
+                 rate_steps_start_adding=0.1,
                  add_every_i=1):
         """ Adds an other loss """
         self.counter += 1
+
+        if self.rate2steps is not None:
+            i_start_adding = self.rate2steps(rate_steps_start_adding)
+        else:
+            i_start_adding = 0
 
         if self.counter < i_start_adding or self.counter % add_every_i != 0:
             return
@@ -255,7 +265,11 @@ class NLLLoss(Loss):
     _INPUTS = "decoder_output"
     _TARGETS = "decoder_output"
 
-    def __init__(self, ignore_index=-1, size_average=True, **kwargs):
+    def __init__(self,
+                 ignore_index=-1,
+                 size_average=True,
+                 total_training_calls=None,
+                 **kwargs):
         self.ignore_index = ignore_index
         self.size_average = size_average
 
@@ -265,7 +279,8 @@ class NLLLoss(Loss):
                                       self._TARGETS,
                                       nn.NLLLoss(ignore_index=ignore_index,
                                                  size_average=size_average,
-                                                 **kwargs))
+                                                 **kwargs),
+                                      total_training_calls=total_training_calls)
 
     def get_loss(self):
         if isinstance(self.acc_loss, int):

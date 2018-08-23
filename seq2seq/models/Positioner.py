@@ -7,12 +7,14 @@ from torch.nn.utils.rnn import pad_sequence
 
 from seq2seq.util.helpers import (MLP, renormalize_input_length, get_rnn,
                                   ProbabilityConverter, AnnealedGaussianNoise,
-                                  HyperparameterInterpolator, get_extra_repr)
+                                  HyperparameterInterpolator, get_extra_repr,
+                                  clamp)
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 IS_X05 = False
+IS_SIGMA0_MINSIGMA = False
 
 
 def _discrete_truncated_gaussian(x, mu, sigma):
@@ -161,7 +163,10 @@ class PositionAttention(nn.Module):
                                              is_get_hidden0=True)
             self.mu_weights_generator = nn.Linear(hidden_size,
                                                   n_building_blocks_mu)
-            self.sigma_generator = nn.Linear(hidden_size, 1)
+            if is_mlps:
+                self.sigma_generator = MLP(hidden_size, hidden_size // 2, 1)
+            else:
+                self.sigma_generator = nn.Linear(hidden_size, 1)
         else:
             if is_mlps:
                 self.mu_weights_generator = MLP(input_size,
@@ -182,9 +187,10 @@ class PositionAttention(nn.Module):
         # expectation of the initialization of sigma0 although what we really
         # care about is sigma1 which could be very different from sigma0 note that
         # sigma0 is 1 but we give it in as -sigma, so it's as if start at -1
+        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 1.0
         self.sigma_to_conf = ProbabilityConverter(is_temperature=True,
                                                   is_bias=True,
-                                                  initial_x=-1*self.initial_sigma)
+                                                  initial_x=-1 * sigma0)
 
         self.mu0 = Parameter(torch.tensor(0.0)).to(device)
         # starting with sigma = 0 would strongly bias network
@@ -204,7 +210,8 @@ class PositionAttention(nn.Module):
         else:
             init_param(self.mu0, is_positive=True)
 
-        self.sigma0 = Parameter(torch.tensor(self.initial_sigma)).to(device)
+        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 1.0
+        self.sigma0 = Parameter(torch.tensor(sigma0)).to(device)
 
         self.get_sigma.reset_parameters()
 
@@ -382,9 +389,7 @@ class PositionAttention(nn.Module):
             mu = torch.sigmoid(mu_weights.unsqueeze(1))
 
         if self.is_clamp_mu:
-            # leaky clamp
-            negative_slope = 0.001
-            mu = torch.max(negative_slope * mu, torch.min(mu, 1 + negative_slope * mu))
+            mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
 
         is_update_sigma = self.training and step == 0
         sigma = torch.max(sigma,

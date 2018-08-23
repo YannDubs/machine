@@ -14,6 +14,7 @@ from seq2seq.metrics.metrics import get_metrics
 from seq2seq.dataset.helpers import get_train_dev
 from seq2seq.util.callbacks import EarlyStopping
 from seq2seq.util.confuser import Confuser
+from seq2seq.util.helpers import Rate2Steps
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -21,16 +22,6 @@ LOG_FORMAT = '%(asctime)s %(name)-12s %(levelname)-8s %(message)s'
 log_level = "warning"
 logging.basicConfig(format=LOG_FORMAT, level=getattr(logging, log_level.upper()))
 logger = logging.getLogger(__name__)
-
-
-class Rate2Steps:
-    """Converts interpolating rates to steps."""
-
-    def __init__(self, total_training_calls):
-        self.total_training_calls = total_training_calls
-
-    def __call__(self, rate):
-        return math.ceil(rate * self.total_training_calls)
 
 
 def get_latest(path):
@@ -517,6 +508,8 @@ def train(train_path,
                                                   oneshot_path=oneshot_path)
 
     total_training_calls = math.ceil(epochs * len(train) / batch_size)
+    rate2steps = Rate2Steps(total_training_calls)
+
     seq2seq = get_seq2seq_model(src, tgt, max_len, total_training_calls,
                                 use_attention=use_attention,
                                 content_method=content_method,
@@ -533,14 +526,16 @@ def train(train_path,
             param.data.uniform_(-0.08, 0.08)
 
     metrics = get_metrics(metric_names, src, tgt, is_predict_eos)
-    losses, loss_weights = get_losses(loss_names, tgt, is_predict_eos, eos_weight=eos_weight)
+    losses, loss_weights = get_losses(loss_names, tgt, is_predict_eos,
+                                      eos_weight=eos_weight,
+                                      total_training_calls=total_training_calls)
 
     early_stopper = EarlyStopping(patience=patience) if (patience is not None) else None
 
     ### DEV MODE ###
     if anneal_eos_weight != 0:
-        n_steps_interpolate_eos_weight = math.ceil(anneal_eos_weight *
-                                                   total_training_calls)
+        n_steps_interpolate_eos_weight = rate2steps(anneal_eos_weight)
+
         loss_weight_updater = LossWeightUpdater(indices=[tgt.eos_id],
                                                 initial_weights=[_initial_eos_weight],
                                                 final_weights=[eos_weight],
