@@ -311,11 +311,11 @@ def apply_weight_norm(module):
         weight_norm(module, 'weight_hh')
     if isinstance(module, (nn.RNN, nn.GRU, nn.LSTM)):
         for i in range(module.num_layers):
-            weight_norm(module, f'weight_ih_l{i}')
-            weight_norm(module, f'weight_hh_l{i}')
+            weight_norm(module, 'weight_ih_l{}'.format(i))
+            weight_norm(module, 'weight_hh_l{}'.format(i))
             if module.bidirectional:
-                weight_norm(module, f'weight_ih_l{i}_reverse')
-                weight_norm(module, f'weight_hh_l{i}_reverse')
+                weight_norm(module, 'weight_ih_l{}_reverse'.format(i))
+                weight_norm(module, 'weight_hh_l{}_reverse'.format(i))
 
 
 def get_rnn(rnn_name, input_size, hidden_size,
