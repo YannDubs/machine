@@ -18,7 +18,7 @@ from seq2seq.optim import Optimizer
 from seq2seq.util.checkpoint import Checkpoint
 from seq2seq.util.callbacks import Plotter, History
 from seq2seq.util.log import Log
-from seq2seq.util.helpers import mean
+from seq2seq.util.helpers import mean, HyperparameterInterpolator
 
 
 def get_clipper(clip_norm=None, clip_value=None):
@@ -67,7 +67,8 @@ class SupervisedTrainer(object):
                  early_stopper=None,
                  clip_norm=None,
                  clip_value=None,
-                 loss_weight_updater=None):
+                 loss_weight_updater=None,
+                 teacher_forcing_kwargs={}):
         self._trainer = "Simple Trainer"
         self.random_seed = random_seed
         if random_seed is not None:
@@ -85,6 +86,7 @@ class SupervisedTrainer(object):
         self.print_every = print_every
         self.clipper = get_clipper(clip_norm, clip_norm)
         self.loss_weight_updater = loss_weight_updater
+        self.teacher_forcing = HyperparameterInterpolator(**teacher_forcing_kwargs)
 
         self.early_stopper = early_stopper
         if early_stopper is not None:
@@ -100,14 +102,14 @@ class SupervisedTrainer(object):
         self.logger = logging.getLogger(__name__)
 
     def _train_batch(self, input_variable, input_lengths, target_variable,
-                     model, teacher_forcing_ratio, confusers=dict()):
+                     model, confusers=dict()):
         loss = self.loss
 
         # Forward propagation
         decoder_outputs, decoder_hidden, other = model(input_variable,
                                                        input_lengths,
                                                        target_variable,
-                                                       teacher_forcing_ratio=teacher_forcing_ratio,
+                                                       teacher_forcing_ratio=self.teacher_forcing(True),
                                                        confusers=confusers)
 
         losses = self.evaluator.compute_batch_loss(decoder_outputs,
@@ -126,7 +128,7 @@ class SupervisedTrainer(object):
                         (additional_loss, kwargs) = zip(*additional_loss)
                         # unnecessarily saves multiple times kwargs (i.e it's always the same)
                         kwargs = kwargs[0]
-                    loss.add_loss(mean(additional_loss), **kwargs)
+                    loss.add_loss(k, mean(additional_loss), **kwargs)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
@@ -148,7 +150,6 @@ class SupervisedTrainer(object):
     def _train_epoches(self, data, model, n_epochs, start_epoch, start_step,
                        dev_data=None,
                        monitor_data=[],
-                       teacher_forcing_ratio=0,
                        top_k=5,
                        confusers=dict()):
 
@@ -223,7 +224,6 @@ class SupervisedTrainer(object):
                                                                input_lengths.tolist(),
                                                                target_variables,
                                                                model,
-                                                               teacher_forcing_ratio,
                                                                confusers=confusers)
 
                 # # # DEV MODE # # #
@@ -352,7 +352,6 @@ class SupervisedTrainer(object):
               dev_data=None,
               monitor_data={},
               optimizer=None,
-              teacher_forcing_ratio=0,
               learning_rate=0.001,
               checkpoint_path=None,
               top_k=5,
@@ -371,7 +370,6 @@ class SupervisedTrainer(object):
             dev_data (seq2seq.dataset.dataset.Dataset, optional): dev Dataset (default None)
             optimizer (seq2seq.optim.Optimizer, optional): optimizer for training
                (default: Optimizer(pytorch.optim.Adam, max_grad_norm=5))
-            teacher_forcing_ratio (float, optional): teaching forcing ratio (default 0)
             learing_rate (float, optional): learning rate used by the optimizer (default 0.001)
             checkpoint_path (str, optional): path to load checkpoint from in case training should be resumed
             top_k (int): how many models should be stored during training
@@ -428,7 +426,6 @@ class SupervisedTrainer(object):
                                           start_epoch, step,
                                           dev_data=dev_data,
                                           monitor_data=monitor_data,
-                                          teacher_forcing_ratio=teacher_forcing_ratio,
                                           top_k=top_k,
                                           confusers=confusers)
         return model, logs, self.history, other

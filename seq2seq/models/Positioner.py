@@ -8,7 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 from seq2seq.util.helpers import (MLP, renormalize_input_length, get_rnn,
                                   ProbabilityConverter, AnnealedGaussianNoise,
                                   HyperparameterInterpolator, get_extra_repr,
-                                  clamp, format_source_lengths)
+                                  clamp, format_source_lengths, Rate2Steps)
 
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
 
@@ -16,6 +16,30 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 IS_X05 = False
 IS_SIGMA0_MINSIGMA = False
+
+
+def get_regularizers_positioner(total_training_calls):
+    """Return the interpolators of the regularizers of the positioner."""
+    rate2steps = Rate2Steps(total_training_calls)
+    max_p_interpolators = dict()
+
+    n_steps_interpolate = rate2steps(0.3)
+    start_step = rate2steps(0.1)
+    max_p_interpolators["mu_weights"
+                        ] = HyperparameterInterpolator(5e-2, 0, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+
+    n_steps_interpolate = rate2steps(0.05)
+    start_step = rate2steps(0)
+    max_p_interpolators["bias_weight"
+                        ] = HyperparameterInterpolator(1e-1, 0, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+
+    return max_p_interpolators
 
 
 def _discrete_truncated_gaussian(x, mu, sigma):
@@ -383,21 +407,15 @@ class PositionAttention(nn.Module):
                                    additional)
 
             if self.is_l1_bb_weights:
-                kwargs = dict(max_proportion=1e-2,
-                              rate_steps_start_adding=0.1,
-                              add_every_i=1)
+                #kwargs = dict(max_proportion=1e-2)
                 # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                additional["losses"]["mu_weights"] = (torch.abs(mu_weights).mean(),
-                                                      kwargs)
-                # additional["losses"]["mu_weights0"] = torch.abs(mu_weights[:, :3]).mean()
-                # additional["losses"]["mu_weights1"] = torch.abs(mu_weights[:, 4:]).mean()
+                additional["losses"]["mu_weights"] = torch.abs(mu_weights).mean()
+                                                      #, kwargs)
             if self.is_l1_bias_weight:
-                kwargs = dict(max_proportion=1e-2,
-                              rate_steps_start_adding=0,
-                              add_every_i=1)
+                #kwargs = dict(max_proportion=1e-2)
                 # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                additional["losses"]["bias_weight"] = (torch.abs(mu_weights[:, -1:]).mean(),
-                                                       kwargs)
+                additional["losses"]["bias_weight"] = torch.abs(mu_weights[:, -1:]).mean()
+                                                       #, kwargs)
 
             building_blocks = self.bb_noise(building_blocks, is_update=(step == 0))
             mu_weights = self.bb_weights_noise(mu_weights, is_update=(step == 0))

@@ -650,6 +650,7 @@ class DecoderRNN(BaseRNN):
         if self.is_content_attn:
             content_attn, content_confidence = self.content_attention(query,
                                                                       keys,
+                                                                      additional,
                                                                       **content_method_kwargs)
             attn = content_attn
 
@@ -663,9 +664,7 @@ class DecoderRNN(BaseRNN):
             self._add_to_visualize([content_confidence, mean_content],
                                    ["content_confidence", "mean_content"],
                                    additional)
-            self._add_to_test([content_attn, content_confidence],
-                              ["content_attention", "content_confidence"],
-                              additional)
+            self._add_to_test(content_attn, "content_attention", additional)
         else:
             mean_content = None
 
@@ -691,7 +690,6 @@ class DecoderRNN(BaseRNN):
 
             additional["mu"] = mu
             additional["sigma"] = sigma
-
             additional["pos_confidence"] = pos_confidence
 
             attn = pos_attn
@@ -700,8 +698,8 @@ class DecoderRNN(BaseRNN):
                                    ["mu", "sigma", "pos_confidence"],
                                    additional)
 
-            self._add_to_test([pos_attn, pos_confidence, mu, sigma],
-                              ["position_attention", "pos_confidence", "mu", "sigma"],
+            self._add_to_test([pos_attn, mu, sigma],
+                              ["position_attention", "mu", "sigma"],
                               additional)
 
         if self.is_content_attn and self.is_position_attn:
@@ -715,7 +713,9 @@ class DecoderRNN(BaseRNN):
 
             additional["position_percentage"] = pos_perc
             self._add_to_visualize(pos_perc, "position_percentage", additional)
-            self._add_to_test(pos_perc, "position_percentage", additional)
+            self._add_to_test([content_confidence, pos_confidence, pos_perc],
+                              ["content_confidence", "pos_confidence", "position_percentage"],
+                              additional)
 
         additional["mean_attn"] = torch.bmm(attn,
                                             rel_counter_encoder[:, :attn.size(2), :]

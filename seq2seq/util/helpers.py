@@ -375,32 +375,6 @@ class GaussianNoise(nn.Module):
                               conditional_shows=["is_relative_detach"])
 
 
-def log_sum_exp(inputs, dim=None, keepdim=False):
-    """Numerically stable logsumexp(i.e 'differentiable max)'.
-
-    credits: https: // github.com / pytorch / pytorch / issues / 2591.
-
-    Args:
-        inputs: A Variable with any shape.
-        dim: An integer.
-        keepdim: A boolean.
-
-    Returns:
-        Equivalent of log(sum(exp(inputs), dim=dim, keepdim=keepdim)).
-    """
-    # For a 1-D array x (any array along a single dimension),
-    # log sum exp(x) = s + log sum exp(x - s)
-    # with s = max(x) being a common choice.
-    if dim is None:
-        inputs = inputs.view(-1)
-        dim = 0
-    s, _ = torch.max(inputs, dim=dim, keepdim=True)
-    outputs = s + (inputs - s).exp().sum(dim=dim, keepdim=True).log()
-    if not keepdim:
-        outputs = outputs.squeeze(dim)
-    return outputs
-
-
 class HyperparameterInterpolator:
     """Helper class to compute the value of a hyperparameter at each training step.
 
@@ -408,10 +382,16 @@ class HyperparameterInterpolator:
     final_value (float): final value of the hyperparameter.
     n_steps_interpolate (int): number of training steps before reaching the
         `final_value`.
+    start_step (int, optional): number of steps to wait for before starting annealing.
+        During the waiting time, the hyperparameter will be `default`.
+    default (float, optional): default hyperparameter value that will be used
+        for the first `start_step`s. If `None` uses `initial_value`.
     mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
     """
 
     def __init__(self, initial_value, final_value, n_steps_interpolate,
+                 start_step=0,
+                 default=None,
                  mode="linear"):
         if n_steps_interpolate < 0:
             # quick trick to swith final / initial
@@ -421,6 +401,8 @@ class HyperparameterInterpolator:
         self.initial_value = initial_value
         self.final_value = final_value
         self.n_steps_interpolate = n_steps_interpolate
+        self.start_step = start_step
+        self.default = default if default is not None else self.initial_value
         self.mode = mode.lower()
         self.is_interpolate = not (self.initial_value == self.final_value or
                                    self.n_steps_interpolate == 0)
@@ -459,6 +441,9 @@ class HyperparameterInterpolator:
         if not self.is_interpolate:
             return self.final_value
 
+        if self.start_step > self.n_training_calls:
+            return self.default
+
         if self.n_training_calls < self.n_steps_interpolate:
             current = self.initial_value
             if self.mode == "geometric":
@@ -490,6 +475,7 @@ class AnnealedGaussianNoise(GaussianNoise):
             computing the scale of the noise. If `False` then the scale of the noise
             won't be seen as a constant but something to optimize: this will bias the
             network to generate vectors with smaller values.
+        kwargs: additional arguments to `HyperparameterInterpolator`.
     """
 
     def __init__(self,
@@ -497,13 +483,15 @@ class AnnealedGaussianNoise(GaussianNoise):
                  final_sigma=0,
                  n_steps_interpolate=0,
                  mode="linear",
-                 is_relative_detach=True):
+                 is_relative_detach=True,
+                 **kwargs):
         super().__init__(sigma=initial_sigma, is_relative_detach=is_relative_detach)
 
         self.get_sigma = HyperparameterInterpolator(initial_sigma,
                                                     final_sigma,
                                                     n_steps_interpolate,
-                                                    mode=mode)
+                                                    mode=mode,
+                                                    **kwargs)
 
     def reset_parameters(self):
         self.get_sigma.reset_parameters()
@@ -528,13 +516,15 @@ class AnnealedDropout(nn.Dropout):
         n_steps_interpolate (int): number of training steps before reaching the
             `final_dropout`.
         mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
+        kwargs: additional arguments to `HyperparameterInterpolator`.
     """
 
     def __init__(self,
                  initial_dropout=0.7,
                  final_dropout=None,
                  n_steps_interpolate=0,
-                 mode="geometric"):
+                 mode="geometric",
+                 **kwargs):
         super().__init__(p=initial_dropout)
 
         if final_dropout is None:
@@ -543,7 +533,8 @@ class AnnealedDropout(nn.Dropout):
         self.get_dropout_p = HyperparameterInterpolator(initial_dropout,
                                                         final_dropout,
                                                         n_steps_interpolate,
-                                                        mode=mode)
+                                                        mode=mode,
+                                                        **kwargs)
 
     def reset_parameters(self):
         self.get_dropout_p.reset_parameters()

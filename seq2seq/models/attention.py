@@ -1,11 +1,13 @@
 """ Content attention modules. """
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
 from seq2seq.util.initialization import weights_init, linear_init
-from seq2seq.util.helpers import MLP, ProbabilityConverter, log_sum_exp
+from seq2seq.util.helpers import MLP, ProbabilityConverter
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -82,7 +84,7 @@ class ContentAttention(nn.Module):
         """
         self.mask = mask
 
-    def forward(self, queries, keys, **attention_method_kwargs):
+    def forward(self, queries, keys, additional, **attention_method_kwargs):
         """Compute the content attention.
 
         Args:
@@ -118,7 +120,16 @@ class ContentAttention(nn.Module):
         # apply local mask
         logits.masked_fill_(mask, -float('inf'))
 
-        approx_max_logit = log_sum_exp(logits, dim=-1)
+        self._add_to_test(logits, "logits", additional)
+
+        approx_max_logit = logits.logsumexp(dim=-1)
+
+        # SHOULD TRY THIS AT SOME POINT
+        # indeed max < logsumexp < max + log(n)
+        # so if want to be sure than never too far from real max can use
+        # max - log(n)/2 < logsumexp - log(n)/2 < max + log(n)/2
+        #approx_max_logit = approx_max_logit - math.log(logits.size(-1)) / 2
+
         confidence = self.maxlogit_to_conf(approx_max_logit)
 
         attn = F.softmax(logits.view(-1, n_keys), dim=1).view(batch_size, -1, n_keys)
@@ -141,6 +152,21 @@ class ContentAttention(nn.Module):
             raise ValueError("Unknown attention method {}".format(method))
 
         return method
+
+    def _add_to_test(self, values, keys, additional):
+        """
+        Save a variable to additional["test"] only if dev mode is on. The
+        variables saved should be the interpretable ones for which you want to
+        know the value of during test time.
+
+        Batch size should always be 1 when predicting with dev mode !
+        """
+        if self.is_dev_mode:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_test(v, k, additional)
+            else:
+                additional["test"][keys] = values
 
 
 class Concat(nn.Module):

@@ -15,6 +15,7 @@ from seq2seq.dataset.helpers import get_train_dev
 from seq2seq.util.callbacks import EarlyStopping
 from seq2seq.util.confuser import Confuser
 from seq2seq.util.helpers import Rate2Steps
+from seq2seq.models.Positioner import get_regularizers_positioner
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -68,7 +69,7 @@ def get_seq2seq_model(src,
                       is_single_carry=True,
                       is_transform_controller=False,
                       is_add_all_controller=True,
-                      use_attention="post-rnn",
+                      use_attention="pre-rnn",
                       is_full_focus=False,
                       content_method='dot',
                       is_content_attn=True,
@@ -411,7 +412,8 @@ def train(train_path,
           src_vocab=50000,
           tgt_vocab=50000,
           is_predict_eos=True,
-          teacher_forcing_ratio=0.2,
+          anneal_teacher_forcing=0,
+          initial_teacher_forcing=0.2,
           batch_size=32,
           eval_batch_size=256,
           lr=0.001,
@@ -457,7 +459,13 @@ def train(train_path,
         tgt_vocab (int, optional): maximum target vocabulary size.
         is_predict_eos (bool, optional): whether the mdoel has to predict the <eos>
             token.
-        teacher_forcing_ratio (float, optional): teacher forcing ratio.
+        anneal_teacher_forcing (float, optional): annealed teacher forcing,
+            the teacher forcing will start at `initial_teacher_forcing` and will
+            linearly decrease at each training calls, until it reaches 0. This
+            parameter defines the percentage  of training calls before reaching
+            a teacher_forcing_ratio of 0.
+        initial_teacher_forcing (float, optional): initial teacher forcing ratio.
+            If `anneal_teacher_forcing==0` will be the constant teacher forcing ratio.
         batch_size (int, optional): size of each training batch.
         eval_batch_size (int, optional): size of each evaluation batch.
         lr (float, optional): learning rate.
@@ -537,9 +545,14 @@ def train(train_path,
             param.data.uniform_(-0.08, 0.08)
 
     metrics = get_metrics(metric_names, src, tgt, is_predict_eos)
+
+    max_p_interpolators = dict()
+    max_p_interpolators.update(get_regularizers_positioner(total_training_calls))
+
     losses, loss_weights = get_losses(loss_names, tgt, is_predict_eos,
                                       eos_weight=eos_weight,
-                                      total_training_calls=total_training_calls)
+                                      total_training_calls=total_training_calls,
+                                      max_p_interpolators=max_p_interpolators)
 
     early_stopper = EarlyStopping(patience=patience) if (patience is not None) else None
 
@@ -556,6 +569,12 @@ def train(train_path,
         loss_weight_updater = None
     ################
 
+    final_teacher_forcing = 0 if anneal_teacher_forcing != 0 else initial_teacher_forcing
+    teacher_forcing_kwargs = dict(initial_value=initial_teacher_forcing,
+                                  final_value=final_teacher_forcing,
+                                  n_steps_interpolate=rate2steps(anneal_teacher_forcing),
+                                  mode="linear")
+
     trainer = SupervisedTrainer(loss=losses,
                                 metrics=metrics,
                                 loss_weights=loss_weights,
@@ -565,7 +584,8 @@ def train(train_path,
                                 print_every=print_every,
                                 expt_dir=output_dir,
                                 early_stopper=early_stopper,
-                                loss_weight_updater=loss_weight_updater)
+                                loss_weight_updater=loss_weight_updater,
+                                teacher_forcing_kwargs=teacher_forcing_kwargs)
 
     if optim is None and is_amsgrad:
         optimizer_kwargs = {"amsgrad": True}
@@ -592,7 +612,6 @@ def train(train_path,
                                                   dev_data=dev,
                                                   optimizer=optim,
                                                   optimizer_kwargs=optimizer_kwargs,
-                                                  teacher_forcing_ratio=teacher_forcing_ratio,
                                                   learning_rate=lr,
                                                   resume=resume,
                                                   checkpoint_path=checkpoint_path,

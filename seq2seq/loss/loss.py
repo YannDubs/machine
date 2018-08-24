@@ -124,7 +124,8 @@ class Loss(object):
             sub-classes.
     """
 
-    def __init__(self, name, log_name, inputs, target, criterion, total_training_calls=None):
+    def __init__(self, name, log_name, inputs, target, criterion,
+                 total_training_calls=None, max_p_interpolators=None):
         self.name = name
         self.log_name = log_name
         self.inputs = inputs
@@ -136,10 +137,12 @@ class Loss(object):
         self.acc_loss = 0
         # normalization term
         self.norm_term = 0
-        self.counter = 0
 
         self.rate2steps = (Rate2Steps(total_training_calls)
                            if total_training_calls is not None else None)
+        self.max_p_interpolators = (max_p_interpolators
+                                    if max_p_interpolators is not None else dict())
+        self.counters = {k: 0 for k, _ in self.max_p_interpolators.items()}
 
     def reset(self):
         """ Reset the accumulated loss. """
@@ -210,20 +213,31 @@ class Loss(object):
         """
         self.acc_loss = self.acc_loss * factor
 
-    def add_loss(self, other_loss,
+    def add_loss(self, name_other, other_loss,
                  weight=None,
-                 max_proportion=1e-2,
-                 rate_steps_start_adding=0.1,
-                 add_every_i=1):
+                 is_update=True,
+                 initial_max_proportion=0,
+                 final_max_proportion=1e-2,
+                 anneal_max_proportion=0,
+                 rate_start_step=0.1,
+                 add_every_i=1,
+                 **kwargs):
         """ Adds an other loss """
-        self.counter += 1
+        if name_other not in self.max_p_interpolators:
+            n_steps_interpolate = self.rate2steps(anneal_max_proportion)
+            start_step = self.rate2steps(rate_start_step)
+            self.max_p_interpolators[name_other
+                                     ] = HyperparameterInterpolator(initial_max_proportion,
+                                                                    final_max_proportion,
+                                                                    n_steps_interpolate,
+                                                                    start_step=start_step,
+                                                                    **kwargs)
+            self.counters[name_other] = 0
 
-        if self.rate2steps is not None:
-            i_start_adding = self.rate2steps(rate_steps_start_adding)
-        else:
-            i_start_adding = 0
+        max_proportion = self.max_p_interpolators[name_other](is_update)
+        self.counters[name_other] += 1
 
-        if self.counter < i_start_adding or self.counter % add_every_i != 0:
+        if self.counters[name_other] % add_every_i != 0:
             return
 
         if weight is None:
@@ -269,6 +283,7 @@ class NLLLoss(Loss):
                  ignore_index=-1,
                  size_average=True,
                  total_training_calls=None,
+                 max_p_interpolators=None,
                  **kwargs):
         self.ignore_index = ignore_index
         self.size_average = size_average
@@ -280,7 +295,8 @@ class NLLLoss(Loss):
                                       nn.NLLLoss(ignore_index=ignore_index,
                                                  size_average=size_average,
                                                  **kwargs),
-                                      total_training_calls=total_training_calls)
+                                      total_training_calls=total_training_calls,
+                                      max_p_interpolators=max_p_interpolators)
 
     def get_loss(self):
         if isinstance(self.acc_loss, int):
