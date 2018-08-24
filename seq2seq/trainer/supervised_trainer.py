@@ -121,7 +121,12 @@ class SupervisedTrainer(object):
             if i == 0 and "losses" in other:
                 other_losses = other.pop("losses")
                 for k, additional_loss in other_losses.items():
-                    loss.add_loss(mean(additional_loss))
+                    kwargs = {}
+                    if isinstance(additional_loss[0], tuple):
+                        (additional_loss, kwargs) = zip(*additional_loss)
+                        # unnecessarily saves multiple times kwargs (i.e it's always the same)
+                        kwargs = kwargs[0]
+                    loss.add_loss(mean(additional_loss), **kwargs)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)

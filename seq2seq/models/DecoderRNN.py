@@ -13,7 +13,8 @@ from .attention import ContentAttention, HardGuidance
 from .baseRNN import BaseRNN
 
 from seq2seq.util.helpers import (renormalize_input_length, AnnealedGaussianNoise,
-                                  get_rnn, get_extra_repr, format_source_lengths)
+                                  get_rnn, get_extra_repr, format_source_lengths,
+                                  recursive_update)
 from seq2seq.util.initialization import weights_init, init_param
 from seq2seq.models.KVQ import QueryGenerator
 from seq2seq.models.Positioner import AttentionMixer, PositionAttention
@@ -325,28 +326,42 @@ class DecoderRNN(BaseRNN):
                 source_lengths=None,
                 additional=None,
                 confusers=dict(),
-                additional_to_store=["content_attention", "position_attention",
-                                     "position_percentage", "mu", 'sigma',
-                                     "content_confidence", "pos_confidence",
-                                     "test", "visualize", "losses"]):
+                additional_to_store=["test", "visualize", "losses"]):
+
+        def store_additional(additional, ret_dict, additional_to_store,
+                             is_multiple_call=False):
+            def append_to_list(dictionary, k, v):
+                dictionary[k] = dictionary.get(k, list())
+                dictionary[k].append(v)
+
+            if additional is None:
+                return
+
+            filtered_additional = {k: v for k, v in additional.items()
+                                   if k in additional_to_store}
+
+            if not is_multiple_call:
+                recursive_update(ret_dict, filtered_additional)
+                # removes so that doesn't add them multiple time uselessly
+                for k in filtered_additional.keys():
+                    additional.pop(k, None)
+            else:
+                for k, v in filtered_additional.items():
+                    if v is not None:
+                        if isinstance(v, dict):
+                            ret_dict[k] = ret_dict.get(k, dict())
+                            for sub_k, sub_v in v.items():
+                                append_to_list(ret_dict[k], sub_k, sub_v)
+                        else:
+                            append_to_list(ret_dict, k, v)
 
         def decode(step, step_output, step_attn, additional=None):
             decoder_outputs.append(step_output)
             if self.use_attention:
                 ret_dict[DecoderRNN.KEY_ATTN_SCORE].append(step_attn)
-            if additional is not None:
-                for k in additional_to_store:
-                    if k in additional:
-                        v = additional[k]
-                        if v is not None:
-                            if isinstance(v, dict):
-                                ret_dict[k] = ret_dict.get(k, dict())
-                                for sub_k, sub_v in v.items():
-                                    ret_dict[k][sub_k] = ret_dict[k].get(sub_k, list())
-                                    ret_dict[k][sub_k].append(sub_v)
-                            else:
-                                ret_dict[k] = ret_dict.get(k, list())
-                                ret_dict[k].append(v)
+
+            store_additional(additional, ret_dict, additional_to_store,
+                             is_multiple_call=True)
 
             symbols = decoder_outputs[-1].topk(1)[1]
             sequence_symbols.append(symbols)
@@ -362,10 +377,8 @@ class DecoderRNN(BaseRNN):
         if self.use_attention:
             ret_dict[DecoderRNN.KEY_ATTN_SCORE] = list()
 
+        store_additional(additional, ret_dict, additional_to_store)
         additional = self._initialize_additional(additional)
-
-        if "carry_rates" in additional:
-            ret_dict["carry_rates"] = additional["carry_rates"]  # should add to docstring + cleaner ?????
 
         inputs, batch_size, max_length = self._validate_args(inputs, encoder_hidden,
                                                              encoder_outputs, function,
@@ -640,7 +653,6 @@ class DecoderRNN(BaseRNN):
                                                                       **content_method_kwargs)
             attn = content_attn
 
-            additional["content_attention"] = content_attn
             additional["content_confidence"] = content_confidence
             additional["mean_content"] = torch.bmm(content_attn,
                                                    rel_counter_encoder[:,
@@ -651,6 +663,9 @@ class DecoderRNN(BaseRNN):
             self._add_to_visualize([content_confidence, mean_content],
                                    ["content_confidence", "mean_content"],
                                    additional)
+            self._add_to_test([content_attn, content_confidence],
+                              ["content_attention", "content_confidence"],
+                              additional)
         else:
             mean_content = None
 
@@ -677,7 +692,6 @@ class DecoderRNN(BaseRNN):
             additional["mu"] = mu
             additional["sigma"] = sigma
 
-            additional["position_attention"] = pos_attn
             additional["pos_confidence"] = pos_confidence
 
             attn = pos_attn
@@ -685,6 +699,10 @@ class DecoderRNN(BaseRNN):
             self._add_to_visualize([mu, sigma, pos_confidence],
                                    ["mu", "sigma", "pos_confidence"],
                                    additional)
+
+            self._add_to_test([pos_attn, pos_confidence, mu, sigma],
+                              ["position_attention", "pos_confidence", "mu", "sigma"],
+                              additional)
 
         if self.is_content_attn and self.is_position_attn:
             attn, pos_perc = self.mix_attention(controller_output,
@@ -697,6 +715,7 @@ class DecoderRNN(BaseRNN):
 
             additional["position_percentage"] = pos_perc
             self._add_to_visualize(pos_perc, "position_percentage", additional)
+            self._add_to_test(pos_perc, "position_percentage", additional)
 
         additional["mean_attn"] = torch.bmm(attn,
                                             rel_counter_encoder[:, :attn.size(2), :]
@@ -821,3 +840,18 @@ class DecoderRNN(BaseRNN):
                 if isinstance(values, torch.Tensor):
                     values = values.mean(0)
                 additional["visualize"][keys] = values
+
+    def _add_to_test(self, values, keys, additional):
+        """
+        Save a variable to additional["test"] only if dev mode is on. The
+        variables saved should be the interpretable ones for which you want to
+        know the value of during test time.
+
+        Batch size should always be 1 when predicting with dev mode !
+        """
+        if self.is_dev_mode:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_test(v, k, additional)
+            else:
+                additional["test"][keys] = values

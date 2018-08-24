@@ -192,7 +192,7 @@ class EncoderRNN(BaseRNN):
         if additional is None:
             additional = dict()
 
-        if not self.training:
+        if self.is_dev_mode:
             additional["test"] = additional.get("test", dict())
 
         batch_size = input_var.size(0)
@@ -224,8 +224,11 @@ class EncoderRNN(BaseRNN):
 
             # # # keeping for testing # # #
             if self.is_highway:
-                carry_rate = self.carry_to_prob(self.carry)
-                values = (1 - carry_rate) * values + (carry_rate) * embedded
+                carry_rates = self.carry_to_prob(self.carry)
+                if self.is_dev_mode:
+                    additional["test"]["carry_rates"] = carry_rates
+
+                values = (1 - carry_rates) * values + (carry_rates) * embedded
             # # # # # # # # # # # # # # # #
 
         # # # keeping for testing # # #

@@ -102,6 +102,7 @@ class PositionAttention(nn.Module):
                  is_bb_bias=False,  # TO DOC
                  is_content_attn=True,
                  is_l1_bb_weights=False,
+                 is_l1_bias_weight=False,  # TO DOC
                  bb_weights_annealed_noise_kwargs={},
                  bb_annealed_noise_kwargs={},
                  is_clamp_mu=True,
@@ -120,6 +121,7 @@ class PositionAttention(nn.Module):
         self.is_content_attn = is_content_attn
         self.is_dev_mode = is_dev_mode
         self.is_l1_bb_weights = is_l1_bb_weights
+        self.is_l1_bias_weight = is_l1_bias_weight
 
         n_additional_musigma_input = 8 - int(not self.is_content_attn)
 
@@ -229,7 +231,8 @@ class PositionAttention(nn.Module):
                                                               "is_building_blocks_mu",
                                                               "is_relative_sigma",
                                                               "is_weight_norm_rnn",
-                                                              "is_l1_bb_weights"])
+                                                              "is_l1_bb_weights",
+                                                              "is_l1_bias_weight"])
 
     def forward(self,
                 decoder_outputs,
@@ -374,16 +377,27 @@ class PositionAttention(nn.Module):
             if self.is_dev_mode:
                 additional['test']['mu_weights'] = mu_weights
                 additional['test']['building_blocks'] = building_blocks
-                additional['test']['step'] = step
 
             self._add_to_visualize([mu_weights, building_blocks],
                                    ['mu_weights', 'building_blocks'],
                                    additional)
 
             if self.is_l1_bb_weights:
-                additional["losses"]["mu_weights"] = torch.abs(mu_weights).mean()
+                kwargs = dict(max_proportion=1e-2,
+                              rate_steps_start_adding=0.1,
+                              add_every_i=1)
+                # unnecessarily saves multiple times kwargs (i.e it's always the same)
+                additional["losses"]["mu_weights"] = (torch.abs(mu_weights).mean(),
+                                                      kwargs)
                 # additional["losses"]["mu_weights0"] = torch.abs(mu_weights[:, :3]).mean()
                 # additional["losses"]["mu_weights1"] = torch.abs(mu_weights[:, 4:]).mean()
+            if self.is_l1_bias_weight:
+                kwargs = dict(max_proportion=1e-2,
+                              rate_steps_start_adding=0,
+                              add_every_i=1)
+                # unnecessarily saves multiple times kwargs (i.e it's always the same)
+                additional["losses"]["bias_weight"] = (torch.abs(mu_weights[:, -1:]).mean(),
+                                                       kwargs)
 
             building_blocks = self.bb_noise(building_blocks, is_update=(step == 0))
             mu_weights = self.bb_weights_noise(mu_weights, is_update=(step == 0))

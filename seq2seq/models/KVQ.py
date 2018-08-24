@@ -97,6 +97,21 @@ class BaseKeyValueQuery(nn.Module):
                               always_shows=["hidden_size", "output_size"],
                               conditional_shows=dict(is_contained_kv=False))
 
+    def _add_to_test(self, values, keys, additional):
+        """
+        Save a variable to additional["test"] only if dev mode is on. The
+        variables saved should be the interpretable ones for which you want to
+        know the value of during test time.
+
+        Batch size should always be 1 when predicting with dev mode !
+        """
+        if self.is_dev_mode:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_test(v, k, additional)
+            else:
+                additional["test"][keys] = values
+
 
 class BaseKeyQuery(BaseKeyValueQuery):
     """Base class for quey query generators.
@@ -406,7 +421,7 @@ class ValueGenerator(BaseKeyValueQuery):
             carry_rates = self.carrier(input_generator)
             carry_rates = self.carry_to_prob(carry_rates)
             values = (1 - carry_rates) * values + carry_rates * embedded
-            additional["carry_rates"] = carry_rates
+            self._add_to_test(carry_rates, "carry_rates", additional)
 
         if self.is_res:
             values += embedded

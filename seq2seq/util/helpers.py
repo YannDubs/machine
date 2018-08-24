@@ -1,6 +1,7 @@
 import sys
 import inspect
 import math
+import collections
 
 import torch
 import torch.nn as nn
@@ -29,6 +30,15 @@ def indentity(x):
 def mean(l):
     """Return mean of list."""
     return sum(l) / len(l)
+
+
+def recursive_update(d, u):
+    for k, v in u.items():
+        if isinstance(v, collections.Mapping):
+            d[k] = recursive_update(d.get(k, {}), v)
+        else:
+            d[k] = v
+    return d
 
 
 def check_import(module, to_use=None):

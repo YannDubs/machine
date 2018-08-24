@@ -99,6 +99,7 @@ def get_seq2seq_model(src,
                       is_building_blocks_mu=True,
                       is_bb_bias=False,
                       is_l1_bb_weights=False,
+                      is_l1_bias_weight=False,  # TO DOC / DEV MODE
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
                       is_pos_perc_weight_conf=True,
@@ -346,6 +347,7 @@ def get_seq2seq_model(src,
                            is_building_blocks_mu=is_building_blocks_mu,
                            is_bb_bias=is_bb_bias,
                            is_l1_bb_weights=is_l1_bb_weights,
+                           is_l1_bias_weight=is_l1_bias_weight,
                            bb_weights_annealed_noise_kwargs=bb_weights_annealed_noise_kwargs,
                            bb_annealed_noise_kwargs=bb_annealed_noise_kwargs)
 
