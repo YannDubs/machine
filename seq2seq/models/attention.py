@@ -142,7 +142,7 @@ class ContentAttention(nn.Module):
         """
         if method == 'multiplicative':
             method = MultiplicativeAttn(dim)
-        if method == 'additive':
+        elif method == 'additive':
             method = AdditiveAttn(dim)
         elif method == 'dot':
             method = ScaledDotAttn()
