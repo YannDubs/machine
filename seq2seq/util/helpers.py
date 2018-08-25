@@ -209,7 +209,8 @@ class ProbabilityConverter(nn.Module):
             and max_p equiprobable.
         temperature (bool, optional): whether to add a paremeter controling the
             steapness of the activation. This is useful when x is used for multiple
-            tasks, and you don't want to constraint it's magnitude.
+            tasks, and you don't want to constraint it's magnitude. By default
+            doesn't let it change sign.
         bias (bool, optional): bias used to shift the activation. This is useful
             when x is used for multiple tasks, and you don't want to constraint
             it's scale.
@@ -253,7 +254,9 @@ class ProbabilityConverter(nn.Module):
         else:
             self.bias = torch.tensor(initial_bias).to(device)
 
-    def forward(self, x, transform_bias=lambda x: x, transform_temperature=lambda x: x):
+    def forward(self, x,
+                transform_bias=lambda x: x,
+                transform_temperature=lambda x: F.relu):
         temperature = transform_temperature(self.temperature)
         bias = transform_bias(self.bias)
 
