@@ -256,7 +256,7 @@ class ProbabilityConverter(nn.Module):
 
     def forward(self, x,
                 transform_bias=lambda x: x,
-                transform_temperature=lambda x: F.relu):
+                transform_temperature=F.relu):
         temperature = transform_temperature(self.temperature)
         bias = transform_bias(self.bias)
 
