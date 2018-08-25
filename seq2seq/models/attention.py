@@ -217,12 +217,18 @@ class Concat(nn.Module):
 
 
 class Dot(nn.Module):
+    """
+    Implements the computation of attention by using a scaled attention just liek
+    in "attention is all you need". Scaling can help when dimension is large :
+    making sure that there are no  extremely small gradients
+    """
 
     def __init__(self):
         super(Dot, self).__init__()
 
     def forward(self, decoder_states, encoder_states):
         attn = torch.bmm(decoder_states, encoder_states.transpose(1, 2))
+        attn = attn / math.sqrt(decoder_states.size(-1))
         return attn
 
 
