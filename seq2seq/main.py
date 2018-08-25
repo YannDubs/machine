@@ -3,6 +3,7 @@ import glob
 import logging
 import warnings
 import math
+import json
 
 import torch
 import torch.nn as nn
@@ -34,8 +35,8 @@ def get_latest(path):
 
 def _save_parameters(args, directory, filename="train_arguments.txt"):
     """Save arguments to a file given a dictionary."""
-    with open(os.path.join(directory, filename), 'w') as file:
-        file.writelines('{}={}\n'.format(k, v) for k, v in args.items())
+    with open(os.path.join(directory, filename), 'w') as f:
+        json.dump(args, f, indent=4, sort_keys=True)
 
 
 def _rename_latest(path, new_name):
