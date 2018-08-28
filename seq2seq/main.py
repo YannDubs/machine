@@ -107,6 +107,7 @@ def get_seq2seq_model(src,
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
                       is_pos_perc_weight_conf=True,
+                      rate_attmix_wait=0,  # TO DOC / DEV MODE
                       is_dev_mode=False,
                       is_viz_train=False,
                       is_mid_focus=False):
@@ -362,7 +363,8 @@ def get_seq2seq_model(src,
 
     attmix_kwargs = dict(is_mlps=is_mlps,
                          is_pos_perc_weight_conf=is_pos_perc_weight_conf,
-                         is_dev_mode=is_dev_mode)
+                         is_dev_mode=is_dev_mode,
+                         n_steps_wait=rate2steps(rate_attmix_wait))
 
     embedding_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_decoder_noise_input))
 

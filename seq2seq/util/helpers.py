@@ -22,7 +22,7 @@ def clamp(x, minimum=0, maximum=1, is_leaky=False, negative_slope=0.001):
     return torch.max(lower_bound, torch.min(x, upper_bound))
 
 
-def indentity(x):
+def identity(x):
     """simple identity function"""
     return x
 
@@ -163,14 +163,14 @@ class MLP(nn.Module):
         self.hidden_size = min(self.input_size, max(hidden_size, self.output_size))
 
         self.dropout_input = (nn.Dropout(p=dropout_input)
-                              if dropout_input > 0 else indentity)
+                              if dropout_input > 0 else identity)
         self.noise_sigma_input = (GaussianNoise(noise_sigma_input)
-                                  if noise_sigma_input > 0 else indentity)
+                                  if noise_sigma_input > 0 else identity)
         self.mlp = nn.Linear(self.input_size, self.hidden_size, bias=bias)
         self.dropout_hidden = (nn.Dropout(p=dropout_hidden)
-                               if dropout_hidden > 0 else indentity)
+                               if dropout_hidden > 0 else identity)
         self.noise_sigma_hidden = (GaussianNoise(noise_sigma_hidden)
-                                   if noise_sigma_hidden > 0 else indentity)
+                                   if noise_sigma_hidden > 0 else identity)
         self.activation = activation()  # cannot be a function from Functional but class
         self.out = nn.Linear(self.hidden_size, self.output_size, bias=bias)
 
@@ -220,6 +220,14 @@ class ProbabilityConverter(nn.Module):
             start with.
         initial_x (float, optional): first value that will be given to the function,
             important to make initial_probability work correctly.
+        bias_transformer (callable, optional): transformer function of the bias.
+            This function should only take care of the boundaries (ex: leaky relu
+            or relu). Note: cannot be a lambda function because of pickle.
+            (default: identity)
+        temperature_transformer (callable, optional): transformer function of the
+            temperature. This function should only take care of the boundaries
+            (ex: leaky relu  or relu). Note: cannot be a lambda function because
+            of pickle. (default: relu)
     """
 
     def __init__(self,
@@ -230,8 +238,8 @@ class ProbabilityConverter(nn.Module):
                  initial_temperature=1.0,
                  initial_probability=0.5,
                  initial_x=0,
-                 bias_transformer=lambda x: x,
-                 temperature_transformer=F.relu):
+                 bias_transformer=identity,
+                 temperature_transformer=F.relu):  # TO DOC + say that _probability_to_bias doesn't take into accoiuntr transform => needs to be boundary case transform
         super(ProbabilityConverter, self).__init__()
         self.min_p = min_p
         self.activation = activation
@@ -295,9 +303,10 @@ class ProbabilityConverter(nn.Module):
         p = (p - self.min_p) / range_p
         p = torch.tensor(p, dtype=torch.float)
         if self.activation == "sigmoid":
-            bias = torch.log(p / (1 - p)) - initial_x * self.initial_temperature
+            bias = -(torch.log((1 - p) / p) / self.initial_temperature + initial_x)
+
         elif self.activation == "hard-sigmoid" or self.activation == "leaky-hard-sigmoid":
-            bias = (p - 0.5) / 0.2 - initial_x * self.initial_temperature
+            bias = ((p - 0.5) / 0.2) / self.initial_temperature - initial_x
         else:
             raise ValueError("Unkown activation : {}".format(self.activation))
 

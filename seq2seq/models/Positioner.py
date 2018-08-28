@@ -224,11 +224,15 @@ class PositionAttention(nn.Module):
         # expectation of the initialization of sigma0 although what we really
         # care about is sigma1 which could be very different from sigma0 note that
         # sigma0 is 1 but we give it in as -sigma, so it's as if start at -1
+
+        # low initial temperature because min_sigma will change during
+        # training and doesn't want vanishing gradients when it reaches small min_sigma
         sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
         self.sigma_to_conf = ProbabilityConverter(is_temperature=True,
                                                   is_bias=True,
                                                   initial_x=-1 * sigma0 / 2,
-                                                  bias_transformer=F.leaky_relu)
+                                                  bias_transformer=F.leaky_relu,
+                                                  initial_temperature=0.5)
 
         self.mu0 = Parameter(torch.tensor(0.0))
         self.sigma0 = Parameter(torch.tensor(sigma0))
@@ -494,12 +498,13 @@ class AttentionMixer(nn.Module):
                  hidden_size=32,
                  is_mlps=True,
                  is_pos_perc_weight_conf=True,
-                 is_dev_mode=False):
+                 is_dev_mode=False,
+                 n_steps_wait=0):  # TO DOC
         super(AttentionMixer, self).__init__()
 
         self.is_dev_mode=is_dev_mode
-
         self.is_pos_perc_weight_conf=is_pos_perc_weight_conf
+        self.n_steps_wait = n_steps_wait
 
         n_additional_pos_perc_inputs=3
 
@@ -539,7 +544,8 @@ class AttentionMixer(nn.Module):
                 content_confidence,
                 pos_attn,
                 pos_confidence,
-                position_perc_old):
+                position_perc_old,
+                additional):
         """Compute and return the final attention and percentage of positional attention.
 
         Args:
@@ -556,27 +562,33 @@ class AttentionMixer(nn.Module):
                 containing the confidence for the positional attentions.
             position_perc_old (torch.tensor): tensor of size (batch_size, 1)
                 containing the last positional percentage.
+            additional (dictionary): dictionary containing additional variables
+                that are necessary for some hyperparamets.
         """
-        batch_size=decoder_output.size(0)
+        batch_size = decoder_output.size(0)
 
-        if self.is_pos_perc_weight_conf:
-            position_perc=pos_confidence / (pos_confidence + content_confidence)
+        if additional["training_step"] > self.n_steps_wait:
+            if self.is_pos_perc_weight_conf:
+                position_perc = pos_confidence / (pos_confidence + content_confidence)
+            else:
+                if step == 0:
+                    position_perc_old = self.position_perc0.expand(batch_size, 1)
+
+                additional_pos_perc_inputs = [pos_confidence,
+                                              content_confidence,
+                                              position_perc_old]
+                position_perc_inputs = torch.cat([decoder_output.squeeze(1)] +
+                                                 additional_pos_perc_inputs,
+                                                 dim=1)
+
+                position_perc = self.pos_perc_generator(position_perc_inputs)
+                position_perc = self.posperc_to_prob(position_perc)
+
+            position_perc = position_perc.unsqueeze(-1)
         else:
-            if step == 0:
-                position_perc_old=self.position_perc0.expand(batch_size, 1)
-
-            additional_pos_perc_inputs=[pos_confidence,
-                                          content_confidence,
-                                          position_perc_old]
-            position_perc_inputs=torch.cat([decoder_output.squeeze(1)] +
-                                             additional_pos_perc_inputs,
-                                             dim=1)
-
-            position_perc=self.pos_perc_generator(position_perc_inputs)
-            position_perc=self.posperc_to_prob(position_perc)
+            position_perc = 0.5
 
         # COnvex combination
-        attn=(pos_attn * position_perc.unsqueeze(-1) +
-                (1 - position_perc.unsqueeze(-1)) * content_attn)
+        attn=(pos_attn * position_perc + (1 - position_perc) * content_attn)
 
         return attn, position_perc

@@ -711,7 +711,8 @@ class DecoderRNN(BaseRNN):
                                                 content_confidence,
                                                 pos_attn,
                                                 pos_confidence,
-                                                additional["position_percentage"])
+                                                additional["position_percentage"],
+                                                additional)
 
             additional["position_percentage"] = pos_perc
             self._add_to_visualize(pos_perc, "position_percentage", additional)

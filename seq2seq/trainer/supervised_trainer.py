@@ -3,7 +3,7 @@ import logging
 import os
 import random
 import shutil
-from distutils.dir_util import copy_tree
+import time
 
 import torch
 import torch.nn as nn
@@ -197,8 +197,8 @@ class SupervisedTrainer(object):
                    ).save(self.expt_dir, name=model_name)
 
         if self.initial_model is not None:
-            copy_tree(os.path.join(self.expt_dir, model_name),
-                      os.path.join(self.expt_dir, self.initial_model))
+            shutil.copytree(os.path.join(self.expt_dir, model_name),
+                            os.path.join(self.expt_dir, self.initial_model))
 
         for epoch in range(start_epoch, n_epochs + 1):
             model.epoch = epoch

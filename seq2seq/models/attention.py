@@ -64,8 +64,11 @@ class ContentAttention(nn.Module):
         self.mask = None
         self.method = self.get_method(method, dim)
 
+        # low initial temperature because logits can take a very high range of values
+        # so don't want to have vanishing gradients from the start
         self.maxlogit_to_conf = ProbabilityConverter(is_temperature=True,
-                                                     is_bias=True)
+                                                     is_bias=True,
+                                                     initial_temperature=0.1)
 
         self.reset_parameters()
 
@@ -124,6 +127,10 @@ class ContentAttention(nn.Module):
 
         approx_max_logit = logits.logsumexp(dim=-1)
 
+        self._add_to_visualize(approx_max_logit,
+                               ["approx_max_logit"],
+                               additional)
+
         # SHOULD TRY THIS AT SOME POINT
         # indeed max < logsumexp < max + log(n)
         # so if want to be sure than never too far from real max can use
@@ -169,6 +176,24 @@ class ContentAttention(nn.Module):
                     self._add_to_test(v, k, additional)
             else:
                 additional["test"][keys] = values
+
+    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=10):
+        """Every `save_every` batch, adds a certain variable to the `visualization`
+        sub-dictionary of additional. Such variables should be the ones that are
+        interpretable, and for which the size is independant of the source length.
+        I.e avaregae over the source length if it is dependant.
+
+        The variables will then be averaged over decoding step and over batch_size.
+        """
+        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_visualize(v, k, additional)
+            else:
+                # averages over the batch size
+                if isinstance(values, torch.Tensor):
+                    values = values.mean(0)
+                additional["visualize"][keys] = values
 
 
 class DotAttn(nn.Module):
