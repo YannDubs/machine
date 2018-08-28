@@ -4,6 +4,7 @@ import logging
 import warnings
 import math
 import json
+import shutil
 
 import torch
 import torch.nn as nn
@@ -72,7 +73,7 @@ def get_seq2seq_model(src,
                       is_add_all_controller=True,
                       use_attention="pre-rnn",
                       is_full_focus=False,
-                      content_method='dot',
+                      content_method='scaledot',
                       is_content_attn=True,
                       is_key=True,
                       is_value=True,
@@ -442,6 +443,7 @@ def train(train_path,
           is_amsgrad=False,
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_query=False,
+          _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.
 
@@ -590,7 +592,8 @@ def train(train_path,
                                 expt_dir=output_dir,
                                 early_stopper=early_stopper,
                                 loss_weight_updater=loss_weight_updater,
-                                teacher_forcing_kwargs=teacher_forcing_kwargs)
+                                teacher_forcing_kwargs=teacher_forcing_kwargs,
+                                initial_model=_initial_model)
 
     if optim is None and is_amsgrad:
         optimizer_kwargs = {"amsgrad": True}
@@ -641,8 +644,15 @@ def train(train_path,
 
     if name_checkpoint is not None:
         _rename_latest(output_dir, name_checkpoint)
+        final_model = os.path.join(output_dir, name_checkpoint)
+    else:
+        final_model = os.path.join(output_dir, get_latest(output_dir))
 
-    _save_parameters(saved_args, os.path.join(output_dir, name_checkpoint))
+    # save the initial model to see initialization
+    shutil.move(os.path.join(output_dir, _initial_model),
+                os.path.join(final_model, _initial_model))
+
+    _save_parameters(saved_args, final_model)
 
     if write_logs:
         output_path = os.path.join(output_dir, write_logs)

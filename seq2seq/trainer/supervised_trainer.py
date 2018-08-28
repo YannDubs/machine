@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import shutil
+from distutils.dir_util import copy_tree
 
 import torch
 import torch.nn as nn
@@ -68,7 +69,8 @@ class SupervisedTrainer(object):
                  clip_norm=None,
                  clip_value=None,
                  loss_weight_updater=None,
-                 teacher_forcing_kwargs={}):
+                 teacher_forcing_kwargs={},
+                 initial_model=None):  # TO DOC
         self._trainer = "Simple Trainer"
         self.random_seed = random_seed
         if random_seed is not None:
@@ -87,6 +89,7 @@ class SupervisedTrainer(object):
         self.clipper = get_clipper(clip_norm, clip_norm)
         self.loss_weight_updater = loss_weight_updater
         self.teacher_forcing = HyperparameterInterpolator(**teacher_forcing_kwargs)
+        self.initial_model = initial_model
 
         self.early_stopper = early_stopper
         if early_stopper is not None:
@@ -192,6 +195,10 @@ class SupervisedTrainer(object):
                    input_vocab=data.fields[seq2seq.src_field_name].vocab,
                    output_vocab=data.fields[seq2seq.tgt_field_name].vocab
                    ).save(self.expt_dir, name=model_name)
+
+        if self.initial_model is not None:
+            copy_tree(os.path.join(self.expt_dir, model_name),
+                      os.path.join(self.expt_dir, self.initial_model))
 
         for epoch in range(start_epoch, n_epochs + 1):
             model.epoch = epoch

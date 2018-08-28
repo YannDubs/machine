@@ -180,7 +180,7 @@ class PositionAttention(nn.Module):
         self.single_step = torch.tensor(1 / self.max_len).to(device)
         self.rel_counter = torch.arange(1, self.max_len + 1
                                         ).type(torch.FloatTensor
-                                               ).unsqueeze(1).to(device) / (self.max_len)
+                                               ).unsqueeze(1).to(device) / (self.max_len-1)
 
         self.building_blocks_labels = ["mu_old",
                                        "mean_attn_old",
