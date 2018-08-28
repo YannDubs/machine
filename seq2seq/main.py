@@ -102,11 +102,13 @@ def get_seq2seq_model(src,
                       is_bb_bias=False,
                       is_l1_bb_weights=False,
                       is_l1_bias_weight=False,  # TO DOC / DEV MODE
+                      is_l1_old_weights=False,  # TO DOC / DEV MODE
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
                       is_pos_perc_weight_conf=True,
                       is_dev_mode=False,
-                      is_viz_train=False):
+                      is_viz_train=False,
+                      is_mid_focus=False):
     """Return a initialized extrapolator model.
 
     Args:
@@ -350,6 +352,7 @@ def get_seq2seq_model(src,
                            is_bb_bias=is_bb_bias,
                            is_l1_bb_weights=is_l1_bb_weights,
                            is_l1_bias_weight=is_l1_bias_weight,
+                           is_l1_old_weights=is_l1_old_weights,
                            bb_weights_annealed_noise_kwargs=bb_weights_annealed_noise_kwargs,
                            bb_annealed_noise_kwargs=bb_annealed_noise_kwargs)
 
@@ -389,7 +392,8 @@ def get_seq2seq_model(src,
                          embedding_noise_kwargs=embedding_noise_kwargs,
                          is_dev_mode=is_dev_mode,
                          is_add_all_controller=is_add_all_controller,
-                         is_viz_train=is_viz_train)
+                         is_viz_train=is_viz_train,
+                         is_mid_focus=is_mid_focus)
 
     mid_dropout_kwargs = dict(n_steps_interpolate=rate2steps(anneal_mid_dropout))
     mid_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_mid_noise))

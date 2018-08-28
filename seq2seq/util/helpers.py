@@ -135,7 +135,8 @@ class MLP(nn.Module):
 
     Args:
         input_size (int): size of the input
-        hidden_size (int): number of hidden neurones
+        hidden_size (int): number of hidden neurones. Force is to be between
+            [input_size, output_size]
         output_size (int): output size
         activation (function, optional): activation function
         dropout_input (float, optional): dropout probability to apply on the
@@ -158,14 +159,13 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
 
         self.input_size = input_size
-        self.hidden_size = hidden_size
         self.output_size = output_size
+        self.hidden_size = min(self.input_size, max(hidden_size, self.output_size))
 
         self.dropout_input = (nn.Dropout(p=dropout_input)
                               if dropout_input > 0 else indentity)
         self.noise_sigma_input = (GaussianNoise(noise_sigma_input)
                                   if noise_sigma_input > 0 else indentity)
-        hidden_size = min(self.input_size, self.hidden_size)
         self.mlp = nn.Linear(self.input_size, self.hidden_size, bias=bias)
         self.dropout_hidden = (nn.Dropout(p=dropout_hidden)
                                if dropout_hidden > 0 else indentity)

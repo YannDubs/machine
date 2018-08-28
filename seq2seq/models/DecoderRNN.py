@@ -137,7 +137,8 @@ class DecoderRNN(BaseRNN):
                  attmix_kwargs={},
                  embedding_noise_kwargs={},
                  is_dev_mode=False,
-                 is_viz_train=False):
+                 is_viz_train=False,
+                 is_mid_focus=True):
 
         super(DecoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p,
@@ -153,6 +154,7 @@ class DecoderRNN(BaseRNN):
         self.sos_id = sos_id
         self.bidirectional_encoder = bidirectional
         self.is_full_focus = is_full_focus
+        self.is_mid_focus = is_mid_focus
 
         self.is_add_all_controller = is_add_all_controller
         self.is_transform_controller = is_transform_controller
@@ -169,12 +171,12 @@ class DecoderRNN(BaseRNN):
         input_rnn_size = self.embedding_size
         input_prediction_size = self.hidden_size
         if self.use_attention == 'pre-rnn':
-            if is_full_focus:
+            if self.is_full_focus or self.is_mid_focus:
                 input_rnn_size = self.value_size
             else:
                 input_rnn_size += self.value_size
         elif self.use_attention == 'post-rnn':
-            if is_full_focus:
+            if self.is_full_focus or self.is_mid_focus:
                 input_prediction_size = self.value_size
             else:
                 input_prediction_size += self.value_size
@@ -245,7 +247,7 @@ class DecoderRNN(BaseRNN):
             if self.is_content_attn and self.is_position_attn:
                 self.mix_attention = AttentionMixer(self.hidden_size, **attmix_kwargs)
 
-            if self.is_full_focus:
+            if self.is_full_focus or self.is_mid_focus:
                 if self.use_attention == 'pre-rnn':
                     self.ffocus_merge = nn.Linear(self.embedding_size + self.value_size,
                                                   input_rnn_size)
@@ -751,11 +753,16 @@ class DecoderRNN(BaseRNN):
         return additional
 
     def _combine_context(self, input_var, context):
-        combined_input = torch.cat((context, input_var), dim=2)
+        if self.is_mid_focus:
+            combined_input = torch.cat((F.relu(context), input_var), dim=2)
+            combined_input = self.ffocus_merge(combined_input)
 
-        if self.is_full_focus:
-            merged_input = F.relu(self.ffocus_merge(combined_input))
-            combined_input = torch.mul(context, merged_input)
+        else:
+            combined_input = torch.cat((context, input_var), dim=2)
+
+            if self.is_full_focus:
+                merged_input = F.relu(self.ffocus_merge(combined_input))
+                combined_input = torch.mul(context, merged_input)
 
         return combined_input
 

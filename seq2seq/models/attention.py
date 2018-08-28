@@ -141,11 +141,13 @@ class ContentAttention(nn.Module):
         Set method to compute attention
         """
         if method == 'multiplicative':
-            method = MultiplicativeAttn(dim)
+            method = MultiplicativeAttn(dim, is_scale=False)
         elif method == 'additive':
             method = AdditiveAttn(dim)
+        elif method == 'scaledot':
+            method = DotAttn(is_scale=True)
         elif method == 'dot':
-            method = ScaledDotAttn()
+            method = DotAttn(is_scale=False)
         elif method == 'hard':
             method = HardGuidance()
         else:
@@ -169,19 +171,21 @@ class ContentAttention(nn.Module):
                 additional["test"][keys] = values
 
 
-class ScaledDotAttn(nn.Module):
+class DotAttn(nn.Module):
     """
     Implements the computation of attention by using a scaled attention just liek
     in "attention is all you need". Scaling can help when dimension is large :
     making sure that there are no  extremely small gradients
     """
 
-    def __init__(self):
+    def __init__(self, is_scale=True):
         super().__init__()
+        self.is_scale = is_scale
 
     def forward(self, queries, keys):
         logits = torch.bmm(queries, keys.transpose(1, 2))
-        logits = logits / math.sqrt(queries.size(-1))
+        if self.is_scale:
+            logits = logits / math.sqrt(queries.size(-1))
         return logits
 
 
@@ -192,10 +196,10 @@ class MultiplicativeAttn(nn.Module):
     making sure that there are no  extremely small gradients
     """
 
-    def __init__(self, dim):
+    def __init__(self, dim, is_scale=True):
         super().__init__()
         self.linear = nn.Linear(dim, dim)
-        self.scaled_dot = ScaledDotAttn()
+        self.scaled_dot = DotAttn(is_scale=is_scale)
 
         self.reset_parameters()
 

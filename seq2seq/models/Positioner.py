@@ -24,19 +24,27 @@ def get_regularizers_positioner(total_training_calls):
     max_p_interpolators = dict()
 
     n_steps_interpolate = rate2steps(0.3)
-    start_step = rate2steps(0.1)
+    start_step = rate2steps(0.05)
     max_p_interpolators["mu_weights"
-                        ] = HyperparameterInterpolator(5e-2, 0, n_steps_interpolate,
+                        ] = HyperparameterInterpolator(5e-2, 3e-3, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
 
     n_steps_interpolate = rate2steps(0.05)
     start_step = rate2steps(0)
-    max_p_interpolators["bias_weight"
-                        ] = HyperparameterInterpolator(1e-1, 0, n_steps_interpolate,
+    max_p_interpolators["constant_weights"
+                        ] = HyperparameterInterpolator(5e-2, 2e-3, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
+                                                       mode="linear")
+
+    n_steps_interpolate = rate2steps(0.01)
+    start_step = rate2steps(0.05)
+    max_p_interpolators["old_weights"
+                        ] = HyperparameterInterpolator(1e-2, 0, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=1e-2,
                                                        mode="linear")
 
     return max_p_interpolators
@@ -127,6 +135,7 @@ class PositionAttention(nn.Module):
                  is_content_attn=True,
                  is_l1_bb_weights=False,
                  is_l1_bias_weight=False,  # TO DOC
+                 is_l1_old_weights=False, # TO DOC
                  bb_weights_annealed_noise_kwargs={},
                  bb_annealed_noise_kwargs={},
                  is_clamp_mu=True,
@@ -146,6 +155,7 @@ class PositionAttention(nn.Module):
         self.is_dev_mode = is_dev_mode
         self.is_l1_bb_weights = is_l1_bb_weights
         self.is_l1_bias_weight = is_l1_bias_weight
+        self.is_l1_old_weights = is_l1_old_weights
 
         n_additional_musigma_input = 8 - int(not self.is_content_attn)
 
@@ -256,7 +266,8 @@ class PositionAttention(nn.Module):
                                                               "is_relative_sigma",
                                                               "is_weight_norm_rnn",
                                                               "is_l1_bb_weights",
-                                                              "is_l1_bias_weight"])
+                                                              "is_l1_bias_weight",
+                                                              "is_l1_old_weights"])
 
     def forward(self,
                 decoder_outputs,
@@ -414,8 +425,19 @@ class PositionAttention(nn.Module):
             if self.is_l1_bias_weight:
                 #kwargs = dict(max_proportion=1e-2)
                 # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                additional["losses"]["bias_weight"] = torch.abs(mu_weights[:, -1:]).mean()
+                #additional["losses"]["bias_weight"] = torch.abs(mu_weights[:, -1:]).mean()
                                                        #, kwargs)
+
+                additional["losses"]["constant_weights"] = (torch.abs(mu_weights[:, -1]).mean() +
+                                                            torch.abs(mu_weights[:, 3]).mean())/2
+
+            if self.is_l1_old_weights:
+                additional["losses"]["old_weights"] = torch.abs(mu_weights[:, :2]).mean()
+
+                if self.is_content_attn:
+                    additional["losses"]["old_weights"] = (additional["losses"]["old_weights"]*2 +
+                                                           torch.abs(mu_weights[:, -2]).mean())/3
+
 
             building_blocks = self.bb_noise(building_blocks, is_update=(step == 0))
             mu_weights = self.bb_weights_noise(mu_weights, is_update=(step == 0))
