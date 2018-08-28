@@ -224,14 +224,14 @@ class PositionAttention(nn.Module):
         # expectation of the initialization of sigma0 although what we really
         # care about is sigma1 which could be very different from sigma0 note that
         # sigma0 is 1 but we give it in as -sigma, so it's as if start at -1
-        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 1.0
+        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
         self.sigma_to_conf = ProbabilityConverter(is_temperature=True,
                                                   is_bias=True,
-                                                  initial_x=-1 * sigma0)
+                                                  initial_x=-1 * sigma0 / 2,
+                                                  bias_transformer=F.leaky_relu)
 
         self.mu0 = Parameter(torch.tensor(0.0))
-        # starting with sigma = 0 would strongly bias network
-        self.sigma0 = Parameter(torch.tensor(self.initial_sigma))
+        self.sigma0 = Parameter(torch.tensor(sigma0))
 
         self.reset_parameters()
 
@@ -247,7 +247,7 @@ class PositionAttention(nn.Module):
         else:
             init_param(self.mu0, is_positive=True)
 
-        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 1.0
+        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
         self.sigma0 = Parameter(torch.tensor(sigma0))
 
         self.get_sigma.reset_parameters()
@@ -322,7 +322,7 @@ class PositionAttention(nn.Module):
         # -sigma can only be negative but you still want confidence between 0
         # and 1 so need to shift to right => add only a positive bias
         # could use relu but for gradient flow use leaky relu
-        pos_confidence = self.sigma_to_conf(-sigma, transform_bias=F.leaky_relu)
+        pos_confidence = self.sigma_to_conf(-sigma)
         pos_confidence = pos_confidence.mean(dim=-1)
 
         rel_counter_encoder = renormalize_input_length(self.rel_counter.expand(batch_size, -1, 1),

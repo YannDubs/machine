@@ -229,7 +229,9 @@ class ProbabilityConverter(nn.Module):
                  is_bias=False,
                  initial_temperature=1.0,
                  initial_probability=0.5,
-                 initial_x=0):
+                 initial_x=0,
+                 bias_transformer=lambda x: x,
+                 temperature_transformer=F.relu):
         super(ProbabilityConverter, self).__init__()
         self.min_p = min_p
         self.activation = activation
@@ -238,6 +240,8 @@ class ProbabilityConverter(nn.Module):
         self.initial_temperature = initial_temperature
         self.initial_probability = initial_probability
         self.initial_x = initial_x
+        self.bias_transformer = bias_transformer
+        self.temperature_transformer = temperature_transformer
 
         self.reset_parameters()
 
@@ -254,22 +258,20 @@ class ProbabilityConverter(nn.Module):
         else:
             self.bias = torch.tensor(initial_bias).to(device)
 
-    def forward(self, x,
-                transform_bias=lambda x: x,
-                transform_temperature=F.relu):
-        temperature = transform_temperature(self.temperature)
-        bias = transform_bias(self.bias)
+    def forward(self, x):
+        temperature = self.bias_transformer(self.temperature)
+        bias = self.bias_transformer(self.bias)
 
         if self.activation == "sigmoid":
-            full_p = torch.sigmoid(x * temperature + bias)
+            full_p = torch.sigmoid((x + bias) * temperature)
         elif self.activation == "hard-sigmoid":
             # makes the default similar to hard sigmoid
-            x = 0.2 * ((x * temperature) + bias) + 0.5
+            x = 0.2 * ((x + bias) * temperature) + 0.5
             full_p = torch.max(torch.tensor(0.0),
                                torch.min(torch.tensor(1.0), x))
         elif self.activation == "leaky-hard-sigmoid":
             negative_slope = 0.01
-            x = 0.2 * ((x * temperature) + bias) + 0.5
+            x = 0.2 * ((x + bias) * temperature) + 0.5
             full_p = torch.min(F.leaky_relu(x, negative_slope=negative_slope),
                                1 + x * negative_slope)
         else:
