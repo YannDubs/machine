@@ -263,6 +263,7 @@ def get_seq2seq_model(src,
             intepretable variables change during training in "visualization"
             of `additional`.
     """
+    assert max_len > 1, "Max len has to be greater than 1"
     if not is_content_attn and (is_key or is_query):
         warnings.warn("`is_key` and `is_query` are useless when no content attention. Setting them to False.")
         is_key = False

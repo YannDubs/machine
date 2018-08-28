@@ -198,9 +198,9 @@ class DecoderRNN(BaseRNN):
             if self.is_content_attn and self.is_position_attn:
                 n_additional_controller_features += 1  # position_perc_old
 
-        self.rel_counter = torch.arange(1, self.max_len + 1
+        self.rel_counter = torch.arange(0, self.max_len
                                         ).type(torch.FloatTensor
-                                               ).unsqueeze(1).to(device) / (self.max_len)
+                                               ).unsqueeze(1).to(device) / (self.max_len - 1)
 
         self.embedding = nn.Embedding(self.output_size, self.embedding_size)
         self.noise_input = AnnealedGaussianNoise(**embedding_noise_kwargs)
@@ -647,7 +647,7 @@ class DecoderRNN(BaseRNN):
         unormalized_counter = self.rel_counter.expand(batch_size, -1, 1)
         rel_counter_encoder = renormalize_input_length(unormalized_counter,
                                                        source_lengths_tensor,
-                                                       self.max_len)
+                                                       self.max_len - 1)
 
         if self.is_content_attn:
             content_attn, content_confidence = self.content_attention(query,
@@ -773,12 +773,12 @@ class DecoderRNN(BaseRNN):
         unormalized_counter = self.rel_counter[step:step + 1].expand(batch_size, 1)
         rel_counter_decoder = renormalize_input_length(unormalized_counter,
                                                        source_lengths_tensor,
-                                                       self.max_len
+                                                       self.max_len - 1
                                                        ).unsqueeze(1)
 
         abs_counter_decoder = self.rel_counter[step:step + 1].expand(batch_size, 1
                                                                      ).unsqueeze(1)
-        abs_counter_decoder = abs_counter_decoder * self.max_len
+        abs_counter_decoder = abs_counter_decoder * (self.max_len - 1)
 
         source_len = source_lengths_tensor.unsqueeze(-1).unsqueeze(-1)
 

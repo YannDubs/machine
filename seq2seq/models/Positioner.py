@@ -135,7 +135,7 @@ class PositionAttention(nn.Module):
                  is_content_attn=True,
                  is_l1_bb_weights=False,
                  is_l1_bias_weight=False,  # TO DOC
-                 is_l1_old_weights=False, # TO DOC
+                 is_l1_old_weights=False,  # TO DOC
                  bb_weights_annealed_noise_kwargs={},
                  bb_annealed_noise_kwargs={},
                  is_clamp_mu=True,
@@ -177,10 +177,10 @@ class PositionAttention(nn.Module):
         self.is_bb_bias = is_bb_bias
         n_building_blocks_mu = (5 - int(not self.is_content_attn) + int(self.is_bb_bias)
                                 if self.is_building_blocks_mu else 1)
-        self.single_step = torch.tensor(1 / self.max_len).to(device)
-        self.rel_counter = torch.arange(1, self.max_len + 1
+        self.single_step = torch.tensor(1 / (self.max_len - 1)).to(device)
+        self.rel_counter = torch.arange(0, self.max_len
                                         ).type(torch.FloatTensor
-                                               ).unsqueeze(1).to(device) / (self.max_len-1)
+                                               ).unsqueeze(1).to(device) / (self.max_len - 1)
 
         self.building_blocks_labels = ["mu_old",
                                        "mean_attn_old",
@@ -327,7 +327,7 @@ class PositionAttention(nn.Module):
 
         rel_counter_encoder = renormalize_input_length(self.rel_counter.expand(batch_size, -1, 1),
                                                        source_lengths_tensor,
-                                                       self.max_len)
+                                                       (self.max_len - 1))
 
         pos_attn = pad_sequence([self.positioner(rel_counter_encoder[b, :length, :],
                                                  mu[b].squeeze(),
@@ -350,111 +350,111 @@ class PositionAttention(nn.Module):
         rel_counter_decoder = renormalize_input_length(self.rel_counter[step:step + 1
                                                                         ].expand(batch_size, 1),
                                                        source_lengths_tensor,
-                                                       self.max_len)
+                                                       (self.max_len - 1))
         abs_counter_decoder = (self.rel_counter[step:step + 1].expand(batch_size, 1) *
-                               self.max_len)
+                               (self.max_len - 1))
 
         if step == 0:
-            mu_old = self.mu0.expand(batch_size, 1)
-            sigma_old = self.sigma0.expand(batch_size, 1)
+            mu_old=self.mu0.expand(batch_size, 1)
+            sigma_old=self.sigma0.expand(batch_size, 1)
         else:
-            mu_old = mu_old.squeeze(2)
-            sigma_old = sigma_old.squeeze(2)
+            mu_old=mu_old.squeeze(2)
+            sigma_old=sigma_old.squeeze(2)
 
-        single_step = renormalize_input_length(self.single_step.expand(batch_size, 1),
+        single_step=renormalize_input_length(self.single_step.expand(batch_size, 1),
                                                source_lengths_tensor,
-                                               self.max_len)
+                                               (self.max_len - 1))
 
-        shared = [mu_old, mean_attn_old, rel_counter_decoder, single_step]
+        shared=[mu_old, mean_attn_old, rel_counter_decoder, single_step]
         if self.is_content_attn:
-            shared = shared + [mean_content_old]
+            shared=shared + [mean_content_old]
 
-        not_shared = [sigma_old,
+        not_shared=[sigma_old,
                       abs_counter_decoder,
                       source_lengths_tensor.unsqueeze(-1)]
-        additional_positioning_features = shared + not_shared
+        additional_positioning_features=shared + not_shared
 
-        positioning_inputs = torch.cat([decoder_outputs.squeeze(1)] +
+        positioning_inputs=torch.cat([decoder_outputs.squeeze(1)] +
                                        additional_positioning_features,
                                        dim=1)
 
         if self.is_bb_bias:
-            bias = self.bias.expand(batch_size, 1)
+            bias=self.bias.expand(batch_size, 1)
             shared += [bias]
 
-        assert_text = "building_blocks and their labels should map to each other."
+        assert_text="building_blocks and their labels should map to each other."
         assert len(shared) == len(self.building_blocks_labels), assert_text
-        building_blocks = torch.cat(shared, dim=1)
+        building_blocks=torch.cat(shared, dim=1)
 
         return positioning_inputs, building_blocks
 
     def _compute_parameters(self, positioning_inputs, building_blocks, step,
                             source_lengths_tensor, additional):
         """Compute the parameters of the positioning function."""
-        batch_size = positioning_inputs.size(0)
+        batch_size=positioning_inputs.size(0)
 
         if self.is_recursive:
             if step == 0:
-                additional["positioner_hidden"] = replicate_hidden0(self.hidden0,
+                additional["positioner_hidden"]=replicate_hidden0(self.hidden0,
                                                                     batch_size)
-            positioning_inputs, positioner_hidden = self.rnn(positioning_inputs.unsqueeze(1),
+            positioning_inputs, positioner_hidden=self.rnn(positioning_inputs.unsqueeze(1),
                                                              additional['positioner_hidden'])
-            positioning_inputs = positioning_inputs.squeeze(1)
-            additional['positioner_hidden'] = positioner_hidden
+            positioning_inputs=positioning_inputs.squeeze(1)
+            additional['positioner_hidden']=positioner_hidden
 
-        mu_weights = self.mu_weights_generator(positioning_inputs)
-        sigma = self.sigma_generator(positioning_inputs)
+        mu_weights=self.mu_weights_generator(positioning_inputs)
+        sigma=self.sigma_generator(positioning_inputs)
 
-        sigma = self.min_sigma + sigma.unsqueeze(1)
+        sigma=self.min_sigma + sigma.unsqueeze(1)
 
         if self.is_building_blocks_mu:
 
             if self.is_dev_mode:
-                additional['test']['mu_weights'] = mu_weights
-                additional['test']['building_blocks'] = building_blocks
+                additional['test']['mu_weights']=mu_weights
+                additional['test']['building_blocks']=building_blocks
 
             self._add_to_visualize([mu_weights, building_blocks],
                                    ['mu_weights', 'building_blocks'],
                                    additional)
 
             if self.is_l1_bb_weights:
-                #kwargs = dict(max_proportion=1e-2)
+                # kwargs = dict(max_proportion=1e-2)
                 # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                additional["losses"]["mu_weights"] = torch.abs(mu_weights).mean()
+                additional["losses"]["mu_weights"]=torch.abs(mu_weights).mean()
                                                       #, kwargs)
             if self.is_l1_bias_weight:
-                #kwargs = dict(max_proportion=1e-2)
+                # kwargs = dict(max_proportion=1e-2)
                 # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                #additional["losses"]["bias_weight"] = torch.abs(mu_weights[:, -1:]).mean()
+                # additional["losses"]["bias_weight"] = torch.abs(mu_weights[:, -1:]).mean()
                                                        #, kwargs)
 
-                additional["losses"]["constant_weights"] = (torch.abs(mu_weights[:, -1]).mean() +
-                                                            torch.abs(mu_weights[:, 3]).mean())/2
+                additional["losses"]["constant_weights"]=(torch.abs(mu_weights[:, -1]).mean() +
+                                                            torch.abs(mu_weights[:, 3]).mean()) / 2
 
             if self.is_l1_old_weights:
-                additional["losses"]["old_weights"] = torch.abs(mu_weights[:, :2]).mean()
+                additional["losses"]["old_weights"]=torch.abs(mu_weights[:, :2]).mean()
 
                 if self.is_content_attn:
-                    additional["losses"]["old_weights"] = (additional["losses"]["old_weights"]*2 +
-                                                           torch.abs(mu_weights[:, -2]).mean())/3
+                    additional["losses"]["old_weights"]=(additional["losses"]["old_weights"] * 2 +
+                                                           torch.abs(mu_weights[:, -2]).mean()) / 3
 
 
-            building_blocks = self.bb_noise(building_blocks, is_update=(step == 0))
-            mu_weights = self.bb_weights_noise(mu_weights, is_update=(step == 0))
+            building_blocks=self.bb_noise(building_blocks, is_update=(step == 0))
+            mu_weights=self.bb_weights_noise(mu_weights, is_update=(step == 0))
             # (batch, 1, 5) * (batch, 5, 1) -> (batch, 1, 1)
-            mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
+            mu=torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
         else:
-            mu = torch.sigmoid(mu_weights.unsqueeze(1))
+            mu=torch.sigmoid(mu_weights.unsqueeze(1))
 
         if self.is_clamp_mu:
-            mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
+            mu=clamp(mu, minimum=0, maximum=1, is_leaky=True)
 
-        is_update_sigma = self.training and step == 0
-        sigma = torch.max(sigma,
+        is_update_sigma=self.training and step == 0
+        sigma=torch.max(sigma,
                           torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
 
         if self.is_relative_sigma:
-            sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
+            sigma=renormalize_input_length(sigma, source_lengths_tensor, 1)
 
         return mu, sigma
 
@@ -473,8 +473,8 @@ class PositionAttention(nn.Module):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values = values.mean(0)
-                additional["visualize"][keys] = values
+                    values=values.mean(0)
+                additional["visualize"][keys]=values
 
 
 class AttentionMixer(nn.Module):
@@ -497,36 +497,36 @@ class AttentionMixer(nn.Module):
                  is_dev_mode=False):
         super(AttentionMixer, self).__init__()
 
-        self.is_dev_mode = is_dev_mode
+        self.is_dev_mode=is_dev_mode
 
-        self.is_pos_perc_weight_conf = is_pos_perc_weight_conf
+        self.is_pos_perc_weight_conf=is_pos_perc_weight_conf
 
-        n_additional_pos_perc_inputs = 3
+        n_additional_pos_perc_inputs=3
 
         # should be under if not is_predict_conf (i.e net else)
         # but keeping while testing `additional_controller_features`
-        self.position_perc0 = Parameter(torch.tensor(0.5))
+        self.position_perc0=Parameter(torch.tensor(0.5))
 
         if not self.is_pos_perc_weight_conf:
             if is_mlps:
-                self.pos_perc_generator = MLP(decoder_output_size +
+                self.pos_perc_generator=MLP(decoder_output_size +
                                               n_additional_pos_perc_inputs,
                                               hidden_size, 1)
             else:
-                self.pos_perc_generator = nn.Linear(decoder_output_size +
+                self.pos_perc_generator=nn.Linear(decoder_output_size +
                                                     n_additional_pos_perc_inputs,
                                                     1)
 
-            self.posperc_to_prob = ProbabilityConverter()
+            self.posperc_to_prob=ProbabilityConverter()
 
         self.reset_parameters()
 
     def set_dev_mode(self, value=True):
-        self.is_dev_mode = value
+        self.is_dev_mode=value
 
     def reset_parameters(self):
         self.apply(weights_init)
-        self.position_perc0 = Parameter(torch.tensor(0.5))
+        self.position_perc0=Parameter(torch.tensor(0.5))
 
     def extra_repr(self):
         return get_extra_repr(self,
@@ -557,26 +557,26 @@ class AttentionMixer(nn.Module):
             position_perc_old (torch.tensor): tensor of size (batch_size, 1)
                 containing the last positional percentage.
         """
-        batch_size = decoder_output.size(0)
+        batch_size=decoder_output.size(0)
 
         if self.is_pos_perc_weight_conf:
-            position_perc = pos_confidence / (pos_confidence + content_confidence)
+            position_perc=pos_confidence / (pos_confidence + content_confidence)
         else:
             if step == 0:
-                position_perc_old = self.position_perc0.expand(batch_size, 1)
+                position_perc_old=self.position_perc0.expand(batch_size, 1)
 
-            additional_pos_perc_inputs = [pos_confidence,
+            additional_pos_perc_inputs=[pos_confidence,
                                           content_confidence,
                                           position_perc_old]
-            position_perc_inputs = torch.cat([decoder_output.squeeze(1)] +
+            position_perc_inputs=torch.cat([decoder_output.squeeze(1)] +
                                              additional_pos_perc_inputs,
                                              dim=1)
 
-            position_perc = self.pos_perc_generator(position_perc_inputs)
-            position_perc = self.posperc_to_prob(position_perc)
+            position_perc=self.pos_perc_generator(position_perc_inputs)
+            position_perc=self.posperc_to_prob(position_perc)
 
         # COnvex combination
-        attn = (pos_attn * position_perc.unsqueeze(-1) +
+        attn=(pos_attn * position_perc.unsqueeze(-1) +
                 (1 - position_perc.unsqueeze(-1)) * content_attn)
 
         return attn, position_perc

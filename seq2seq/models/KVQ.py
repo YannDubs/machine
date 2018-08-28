@@ -38,12 +38,12 @@ def _get_counters(max_len, is_abscounter, is_relcounter, is_rotcounters,
         abs_counter = increments
 
     if is_relcounter:
-        rel_counter = increments / max_len
-        rel_counter = renormalize_input_length(rel_counter, input_lengths_tensor, max_len)
+        rel_counter = increments / (max_len - 1)
+        rel_counter = renormalize_input_length(rel_counter, input_lengths_tensor, (max_len - 1))
 
     if is_rotcounters:
-        angles = increments / max_len * math.pi
-        angles = renormalize_input_length(angles, input_lengths_tensor, max_len)
+        angles = math.pi * increments / (max_len - 1)
+        angles = renormalize_input_length(angles, input_lengths_tensor, (max_len - 1))
         rot_counters = torch.cat([torch.cos(angles), torch.sin(angles)], dim=2)
 
     if any(c.nelement() != 0 for c in (abs_counter, rel_counter, rot_counters)):
