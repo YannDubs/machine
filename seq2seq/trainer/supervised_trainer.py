@@ -3,7 +3,6 @@ import logging
 import os
 import random
 import shutil
-import time
 
 import torch
 import torch.nn as nn
@@ -24,7 +23,7 @@ from seq2seq.util.helpers import mean, HyperparameterInterpolator
 
 def get_clipper(clip_norm=None, clip_value=None):
     if clip_value is not None:
-        return lambda x: nn.utils.clip_grad_value_(x, clip_norm)
+        return lambda x: nn.utils.clip_grad_value_(x, clip_value)
     elif clip_norm is not None:
         return lambda x: nn.utils.clip_grad_norm_(x, clip_norm)
     else:
@@ -131,6 +130,8 @@ class SupervisedTrainer(object):
                         (additional_loss, kwargs) = zip(*additional_loss)
                         # unnecessarily saves multiple times kwargs (i.e it's always the same)
                         kwargs = kwargs[0]
+                    # additional loss is already averaged over batch, here only
+                    # avaerage over time steps
                     loss.add_loss(k, mean(additional_loss), **kwargs)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
@@ -197,8 +198,11 @@ class SupervisedTrainer(object):
                    ).save(self.expt_dir, name=model_name)
 
         if self.initial_model is not None:
-            shutil.copytree(os.path.join(self.expt_dir, model_name),
-                            os.path.join(self.expt_dir, self.initial_model))
+            initial_path = os.path.join(self.expt_dir, self.initial_model)
+            if os.path.exists(initial_path) and os.path.isdir(initial_path):
+                shutil.rmtree(initial_path)
+
+            shutil.copytree(os.path.join(self.expt_dir, model_name), initial_path)
 
         for epoch in range(start_epoch, n_epochs + 1):
             model.epoch = epoch

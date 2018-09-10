@@ -4,10 +4,10 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.parameter import Parameter
 
 from seq2seq.util.initialization import weights_init, linear_init
-from seq2seq.util.helpers import MLP, ProbabilityConverter
+from seq2seq.util.torchextend import MLP, ProbabilityConverter
+from seq2seq.util.helpers import Clamper
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -68,7 +68,10 @@ class ContentAttention(nn.Module):
         # so don't want to have vanishing gradients from the start
         self.maxlogit_to_conf = ProbabilityConverter(is_temperature=True,
                                                      is_bias=True,
-                                                     initial_temperature=0.1)
+                                                     initial_temperature=0.1,
+                                                     temperature_transformer=Clamper(minimum=0.05,
+                                                                                     maximum=10,
+                                                                                     is_leaky=True))
 
         self.reset_parameters()
 
@@ -123,10 +126,11 @@ class ContentAttention(nn.Module):
         # apply local mask
         logits.masked_fill_(mask, -float('inf'))
 
-        self._add_to_test(logits, "logits", additional)
-
         approx_max_logit = logits.logsumexp(dim=-1)
 
+        self._add_to_test([logits, approx_max_logit],
+                          ["logits", "approx_max_logit"],
+                          additional)
         self._add_to_visualize(approx_max_logit,
                                ["approx_max_logit"],
                                additional)
@@ -177,7 +181,7 @@ class ContentAttention(nn.Module):
             else:
                 additional["test"][keys] = values
 
-    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=10):
+    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
         """Every `save_every` batch, adds a certain variable to the `visualization`
         sub-dictionary of additional. Such variables should be the ones that are
         interpretable, and for which the size is independant of the source length.
@@ -192,7 +196,7 @@ class ContentAttention(nn.Module):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values = values.mean(0)
+                    values = values.mean(0).cpu()
                 additional["visualize"][keys] = values
 
 

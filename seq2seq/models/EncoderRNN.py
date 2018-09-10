@@ -6,8 +6,9 @@ from torch.nn.parameter import Parameter
 from .baseRNN import BaseRNN
 
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
-from seq2seq.util.helpers import (ProbabilityConverter, get_rnn, get_extra_repr,
+from seq2seq.util.helpers import (get_rnn, get_extra_repr,
                                   format_source_lengths)
+from seq2seq.util.torchextend import ProbabilityConverter
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -128,9 +129,11 @@ class EncoderRNN(BaseRNN):
         # # # keeping for testing # # #
         if not self.is_value and self.is_highway:
             if self.bidirectional_hidden_size != self.embedding_size:
-                raise ValueError("hidden_size should be equal embedding_size when using highway.")
+                raise ValueError(
+                    "hidden_size should be equal embedding_size when using highway.")
             self.carry = Parameter(torch.tensor(1.0))
-            self.carry_to_prob = ProbabilityConverter(initial_probability=initial_highway)
+            self.carry_to_prob = ProbabilityConverter(
+                initial_probability=initial_highway)
         # # # # # # # # # # # # # # # #
 
         self.reset_parameters()
@@ -187,7 +190,8 @@ class EncoderRNN(BaseRNN):
             - **hidden** (num_layers * num_directions, batch, hidden_size):
                 variable containing the features in the hidden state h
         """
-        input_lengths_list, input_lengths_tensor = format_source_lengths(input_lengths)
+        input_lengths_list, input_lengths_tensor = format_source_lengths(
+            input_lengths)
 
         if additional is None:
             additional = dict()
@@ -210,15 +214,18 @@ class EncoderRNN(BaseRNN):
 
         if self.variable_lengths:
             embedded = embedded_unpacked
-            output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
+            output, _ = nn.utils.rnn.pad_packed_sequence(
+                output, batch_first=True)
 
         if self.is_key:
-            keys, additional = self.key_generator(output, input_lengths_tensor, additional)
+            keys, additional = self.key_generator(
+                output, input_lengths_tensor, additional)
         else:
             keys = output
 
         if self.is_value:
-            values, additional = self.value_generator(output, embedded, additional)
+            values, additional = self.value_generator(
+                output, embedded, additional)
         else:
             values = output
 
@@ -235,7 +242,8 @@ class EncoderRNN(BaseRNN):
         if not self.is_value and not self.is_key:
             if self.is_decoupled_kv:
                 if self.is_highway:
-                    raise ValueError("Cannot have both highway and decoupled KV at the same time")
+                    raise ValueError(
+                        "Cannot have both highway and decoupled KV at the same time")
 
                 dim = values.size(2)
                 n_value = dim // 2

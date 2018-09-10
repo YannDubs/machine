@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 
 
-from seq2seq.util.helpers import MLP
+from seq2seq.util.torchextend import MLP
 from seq2seq.util.initialization import linear_init
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -5,47 +5,97 @@ import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 from torch.nn.utils.rnn import pad_sequence
 
-from seq2seq.util.helpers import (MLP, renormalize_input_length, get_rnn,
-                                  ProbabilityConverter, AnnealedGaussianNoise,
+from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
                                   HyperparameterInterpolator, get_extra_repr,
-                                  clamp, format_source_lengths, Rate2Steps)
-
+                                  clamp, format_source_lengths, Rate2Steps,
+                                  get_indices, Clamper, regularization_loss)
+from seq2seq.util.torchextend import (MLP, StochasticRounding, ConcreteRounding,
+                                      ProbabilityConverter, AnnealedGaussianNoise)
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
+from seq2seq.util.l0 import L0Dense
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-IS_X05 = False
-IS_SIGMA0_MINSIGMA = False
+IS_X05 = True
+IS_SIGMA0_MINSIGMA = True
 
 
-def get_regularizers_positioner(total_training_calls):
+def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     """Return the interpolators of the regularizers of the positioner."""
     rate2steps = Rate2Steps(total_training_calls)
     max_p_interpolators = dict()
+    is_prepare_pos = n_steps_prepare_pos is not None
 
     n_steps_interpolate = rate2steps(0.3)
-    start_step = rate2steps(0.05)
+    start_step = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
     max_p_interpolators["mu_weights"
-                        ] = HyperparameterInterpolator(5e-2, 3e-3, n_steps_interpolate,
+                        ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
+    print()
+    print("mu_weights:", max_p_interpolators["mu_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0.05)
-    start_step = rate2steps(0)
-    max_p_interpolators["constant_weights"
-                        ] = HyperparameterInterpolator(5e-2, 2e-3, n_steps_interpolate,
+    start_step = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    max_p_interpolators["const_weights"
+                        ] = HyperparameterInterpolator(5e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
-                                                       default=0,
+                                                       default=5e-2,
                                                        mode="linear")
 
-    n_steps_interpolate = rate2steps(0.01)
-    start_step = rate2steps(0.05)
-    max_p_interpolators["old_weights"
-                        ] = HyperparameterInterpolator(1e-2, 0, n_steps_interpolate,
+    print("const_weights:", max_p_interpolators["const_weights"].extra_repr())
+
+    # wait until positioning converges
+    n_steps_interpolate = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)  # should try 0.05
+    start_step = rate2steps(0)  # should try 0
+    # n_steps_interpolate = rate2steps(0.05 if is_prepare_pos else n_steps_prepare_pos)
+    # start_step = rate2steps(0)
+    max_p_interpolators["old_pos_weights"
+                        ] = HyperparameterInterpolator(5e-2, 0, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=1e-2,
                                                        mode="linear")
+
+    print("old_pos_weights:", max_p_interpolators["old_pos_weights"].extra_repr())
+
+    n_steps_interpolate = rate2steps(0)
+    start_step = rate2steps(0)
+    max_p_interpolators["clamp_mu"
+                        ] = HyperparameterInterpolator(5e-2, 5e-2, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+
+    print("clamp_mu:", max_p_interpolators["clamp_mu"].extra_repr())
+
+    n_steps_interpolate = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    start_step = rate2steps(0)
+    max_p_interpolators["round_weights"
+                        ] = HyperparameterInterpolator(0, 5e-2, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+    print("round_weights:", max_p_interpolators["round_weights"].extra_repr())
+
+    n_steps_interpolate = rate2steps(0.3)
+    start_step = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    max_p_interpolators["l0_weights"
+                        ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+    print("l0_weights:", max_p_interpolators["l0_weights"].extra_repr())
+
+    n_steps_interpolate = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    start_step = rate2steps(0)
+    max_p_interpolators["variance_weights"
+                        ] = HyperparameterInterpolator(0., 1e-2, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+    print("variance_weights:", max_p_interpolators["variance_weights"].extra_repr())
+    print()
 
     return max_p_interpolators
 
@@ -74,6 +124,17 @@ def _get_positioner(name):
         raise ValueError("Unkown positioner method {}".format(name))
 
 
+def _get_rounder(name=None, **kwargs):
+    if name is None:
+        return None
+    elif name == "concrete":
+        return ConcreteRounding(**kwargs)
+    elif name == "stochastic":
+        return StochasticRounding(**kwargs)
+    else:
+        raise ValueError("Unkown rounder method {}".format(name))
+
+
 class PositionAttention(nn.Module):
     """Position Attention Generator.
 
@@ -93,7 +154,7 @@ class PositionAttention(nn.Module):
         is_building_blocks_mu (bool, optional): whether to use building blocks to
             generate the positional mu rather than using a normal MLP.
         is_content_attn (bool, optional): whether you are using content attention.
-        is_l1_bb_weights (bool, optional): whether to use a l1 regularization
+        is_reg_bb_weights (bool, optional): whether to use a regularization
             on the postional attention mu's building block weights. This can
             be usefull if the building blocks are gihly correlyted.
 
@@ -124,6 +185,7 @@ class PositionAttention(nn.Module):
     """
 
     def __init__(self, decoder_output_size, max_len,
+                 n_steps_prepare_pos=None,  # TO DOC
                  positioning_method="gaussian",
                  is_mlps=True,
                  hidden_size=32,
@@ -133,13 +195,24 @@ class PositionAttention(nn.Module):
                  is_building_blocks_mu=True,
                  is_bb_bias=False,  # TO DOC
                  is_content_attn=True,
-                 is_l1_bb_weights=False,
-                 is_l1_bias_weight=False,  # TO DOC
-                 is_l1_old_weights=False,  # TO DOC
+                 is_sequential_attn=False,  # TO DOC
+                 is_reg_bb_weights=False,
+                 is_reg_const_weights=False,  # TO DOC
+                 is_reg_old_weights=False,  # TO DOC
+                 is_reg_clamp_mu=False,  # TO DOC OR SIMPLY ENFORCE
+                 is_reg_round_weights=False,  # TO DOC
+                 is_reg_variance_weights=False,  # TO DOC
+                 is_l0_bb_weights=False,  # TO DOC
+                 lp_reg_weights=1,
+                 is_clamp_weights=True,  # TO DOC
+                 rounder_weights_kwargs={},  # TO DOC
+                 rounder_mu_kwargs={},  # TO DOC
                  bb_weights_annealed_noise_kwargs={},
                  bb_annealed_noise_kwargs={},
+                 bb_const_annealed_noise_kwargs={},  # TO DOC
                  is_clamp_mu=True,
                  is_relative_sigma=True,
+                 is_force_sigma=False,  # TO DOC
                  # with min_sigma=0.5 the max attention you can have is 0.9647
                  min_sigma=0.5,
                  # intial_sigma=5 chosen so that high sigma but up to length 50
@@ -149,25 +222,41 @@ class PositionAttention(nn.Module):
                  is_dev_mode=False):
         super(PositionAttention, self).__init__()
 
+        self.n_steps_prepare_pos = n_steps_prepare_pos
         self.positioning_method = positioning_method
         self.is_weight_norm_rnn = is_weight_norm_rnn
         self.is_content_attn = is_content_attn
+        self.is_sequential_attn = is_sequential_attn
         self.is_dev_mode = is_dev_mode
-        self.is_l1_bb_weights = is_l1_bb_weights
-        self.is_l1_bias_weight = is_l1_bias_weight
-        self.is_l1_old_weights = is_l1_old_weights
+        self.is_reg_bb_weights = is_reg_bb_weights
+        self.is_reg_const_weights = is_reg_const_weights
+        self.is_reg_old_weights = is_reg_old_weights
+        self.is_reg_clamp_mu = is_reg_clamp_mu
+        self.is_reg_round_weights = is_reg_round_weights
+        self.is_l0_bb_weights = is_l0_bb_weights
+        self.lp_reg_weights = lp_reg_weights
+        self.is_clamp_weights = is_clamp_weights
+        self.is_reg_variance_weights = is_reg_variance_weights
 
-        n_additional_musigma_input = 8 - int(not self.is_content_attn)
+        n_additional_mu_input = 9 - int(not self.is_content_attn)
 
-        input_size = decoder_output_size + n_additional_musigma_input
+        input_size = decoder_output_size + n_additional_mu_input
         self.is_recursive = is_recursive
         self.positioner = _get_positioner(self.positioning_method)
+        self.is_force_sigma = is_force_sigma
         self.min_sigma = min_sigma
         self.initial_sigma = initial_sigma
-        self.get_sigma = HyperparameterInterpolator(self.initial_sigma,
-                                                    self.min_sigma,
-                                                    n_steps_interpolate_min_sigma,
-                                                    mode="linear")
+        if self.n_steps_prepare_pos is None:
+            self.get_sigma = HyperparameterInterpolator(self.initial_sigma,
+                                                        self.min_sigma,
+                                                        n_steps_interpolate_min_sigma,
+                                                        mode="linear")
+        else:
+            self.get_sigma = HyperparameterInterpolator(self.initial_sigma,
+                                                        self.min_sigma * 2,
+                                                        self.n_steps_prepare_pos,
+                                                        mode="linear")
+
         self.is_relative_sigma = is_relative_sigma
         self.max_len = max_len
         self.is_clamp_mu = is_clamp_mu
@@ -175,23 +264,28 @@ class PositionAttention(nn.Module):
         # Building blocks
         self.is_building_blocks_mu = is_building_blocks_mu
         self.is_bb_bias = is_bb_bias
-        n_building_blocks_mu = (5 - int(not self.is_content_attn) + int(self.is_bb_bias)
-                                if self.is_building_blocks_mu else 1)
         self.single_step = torch.tensor(1 / (self.max_len - 1)).to(device)
         self.rel_counter = torch.arange(0, self.max_len
                                         ).type(torch.FloatTensor
                                                ).unsqueeze(1).to(device) / (self.max_len - 1)
 
-        self.building_blocks_labels = ["mu_old",
-                                       "mean_attn_old",
-                                       "rel_counter_decoder",
-                                       "single_step"]
-        if self.is_content_attn:
-            self.building_blocks_labels += ["mean_content_old"]
+        self.bb_labels = ["mean_attn_old",
+                          "rel_counter_decoder",
+                          "single_step"]  # should use dictionnary instead
+
+        if not self.is_sequential_attn:
+            # if uses only one attention at a time
+            # don't let the network see what other attention chose
+            self.bb_labels += ["mu_old"]
+
+            if self.is_content_attn:
+                self.bb_labels += ["mean_content_old"]
 
         if self.is_bb_bias:
             self.bias = torch.tensor(1.0).to(device)
-            self.building_blocks_labels += ["bias"]
+            self.bb_labels += ["bias"]
+
+        n_building_blocks_mu = len(self.bb_labels) if self.is_building_blocks_mu else 1
 
         if self.is_recursive:
             self.rnn, self.hidden0 = get_rnn(rnn_cell, input_size, hidden_size,
@@ -200,25 +294,43 @@ class PositionAttention(nn.Module):
                                              is_get_hidden0=True)
             self.mu_weights_generator = nn.Linear(hidden_size,
                                                   n_building_blocks_mu)
-            if is_mlps:
-                self.sigma_generator = MLP(hidden_size, hidden_size // 2, 1)
-            else:
-                self.sigma_generator = nn.Linear(hidden_size, 1)
+
+            if not self.is_force_sigma:
+                if is_mlps:
+                    self.sigma_generator = MLP(hidden_size, hidden_size // 2, 1)
+                else:
+                    self.sigma_generator = nn.Linear(hidden_size, 1)
         else:
             if is_mlps:
                 self.mu_weights_generator = MLP(input_size,
                                                 hidden_size,
                                                 n_building_blocks_mu)
-                self.sigma_generator = MLP(input_size,
-                                           hidden_size,
-                                           1)
+
+                if not self.is_force_sigma:
+                    self.sigma_generator = MLP(input_size,
+                                               hidden_size,
+                                               1)
             else:
                 self.mu_weights_generator = nn.Linear(input_size,
                                                       n_building_blocks_mu)
-                self.sigma_generator = nn.Linear(input_size, 1)
+
+                if not self.is_force_sigma:
+                    self.sigma_generator = nn.Linear(input_size, 1)
 
         self.bb_noise = AnnealedGaussianNoise(**bb_annealed_noise_kwargs)
-        self.bb_weights_noise = AnnealedGaussianNoise(**bb_weights_annealed_noise_kwargs)
+        self.bb_weights_noise = AnnealedGaussianNoise(is_relative_sigma=False,
+                                                      **bb_weights_annealed_noise_kwargs)
+        self.bb_const_noise = AnnealedGaussianNoise(**bb_const_annealed_noise_kwargs)
+
+        self.rounder_weights = _get_rounder(**rounder_weights_kwargs)
+        self.rounder_mu = _get_rounder(**rounder_mu_kwargs)
+
+        if self.is_building_blocks_mu and self.is_l0_bb_weights:
+            self.linear_l0_weights = L0Dense(n_building_blocks_mu, 1,
+                                             is_give_weights=True,
+                                             bias=False,
+                                             weight_decay=0.,
+                                             lamba=1.)
 
         # inital sigma will not be 0 so have to change that value : I use the
         # expectation of the initialization of sigma0 although what we really
@@ -232,10 +344,14 @@ class PositionAttention(nn.Module):
                                                   is_bias=True,
                                                   initial_x=-1 * sigma0 / 2,
                                                   bias_transformer=F.leaky_relu,
-                                                  initial_temperature=0.5)
+                                                  initial_temperature=0.5,
+                                                  temperature_transformer=Clamper(minimum=0.5,
+                                                                                  maximum=10,
+                                                                                  is_leaky=True))
 
         self.mu0 = Parameter(torch.tensor(0.0))
         self.sigma0 = Parameter(torch.tensor(sigma0))
+        self.mean_mu_olds_factor = Parameter(torch.tensor(0.0))
 
         self.reset_parameters()
 
@@ -254,6 +370,8 @@ class PositionAttention(nn.Module):
         sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
         self.sigma0 = Parameter(torch.tensor(sigma0))
 
+        init_param(self.mean_mu_olds_factor, is_positive=True)
+
         self.get_sigma.reset_parameters()
 
     def flatten_parameters(self):
@@ -269,9 +387,9 @@ class PositionAttention(nn.Module):
                                                               "is_building_blocks_mu",
                                                               "is_relative_sigma",
                                                               "is_weight_norm_rnn",
-                                                              "is_l1_bb_weights",
-                                                              "is_l1_bias_weight",
-                                                              "is_l1_old_weights"])
+                                                              "is_reg_bb_weights",
+                                                              "is_reg_const_weights",
+                                                              "is_reg_old_weights"])
 
     def forward(self,
                 decoder_outputs,
@@ -281,6 +399,7 @@ class PositionAttention(nn.Module):
                 sigma_old,
                 mean_content_old,
                 mean_attn_old,
+                mean_mu_olds,
                 additional):
         """Compute and return the positional attention, confidence, parameters.
 
@@ -302,6 +421,8 @@ class PositionAttention(nn.Module):
                 containing the mean position of the last attention.
             mean_attn_old (torch.tensor): tensor of size (batch_size, n_steps)
                 containing the mean position of the last content attention.
+            mean_attn_old (torch.tensor): tensor of size (batch_size, n_steps)
+                containing the mean mu across all previous time steps.
             additional (dictionary): dictionary containing additional variables
                 that are necessary for some hyperparamets.
         """
@@ -314,7 +435,9 @@ class PositionAttention(nn.Module):
                                                                  mu_old,
                                                                  sigma_old,
                                                                  mean_content_old,
-                                                                 mean_attn_old)
+                                                                 mean_attn_old,
+                                                                 mean_mu_olds,
+                                                                 additional)
 
         mu, sigma = self._compute_parameters(positioning_inputs,
                                              building_blocks,
@@ -330,8 +453,8 @@ class PositionAttention(nn.Module):
         pos_confidence = pos_confidence.mean(dim=-1)
 
         rel_counter_encoder = renormalize_input_length(self.rel_counter.expand(batch_size, -1, 1),
-                                                       source_lengths_tensor,
-                                                       (self.max_len - 1))
+                                                       source_lengths_tensor - 1,
+                                                       self.max_len - 1)
 
         pos_attn = pad_sequence([self.positioner(rel_counter_encoder[b, :length, :],
                                                  mu[b].squeeze(),
@@ -345,7 +468,8 @@ class PositionAttention(nn.Module):
         return pos_attn, pos_confidence, mu, sigma
 
     def _get_features(self, decoder_outputs, source_lengths_tensor, step, mu_old,
-                      sigma_old, mean_content_old, mean_attn_old):
+                      sigma_old, mean_content_old, mean_attn_old, mean_mu_olds,
+                      additional):
         """Gets the inputs and the buillding blocks for positioning. Together
         those will eb used to compute the parameters of the positioning function.
         """
@@ -353,116 +477,261 @@ class PositionAttention(nn.Module):
 
         rel_counter_decoder = renormalize_input_length(self.rel_counter[step:step + 1
                                                                         ].expand(batch_size, 1),
-                                                       source_lengths_tensor,
-                                                       (self.max_len - 1))
+                                                       source_lengths_tensor - 1,
+                                                       self.max_len - 1)
         abs_counter_decoder = (self.rel_counter[step:step + 1].expand(batch_size, 1) *
                                (self.max_len - 1))
 
         if step == 0:
-            mu_old=self.mu0.expand(batch_size, 1)
-            sigma_old=self.sigma0.expand(batch_size, 1)
+            mu_old = self.mu0.expand(batch_size, 1)
+            sigma_old = self.sigma0.expand(batch_size, 1)
+            mean_mu_olds = mu_old
         else:
-            mu_old=mu_old.squeeze(2)
-            sigma_old=sigma_old.squeeze(2)
+            mu_old = mu_old.squeeze(2)
+            sigma_old = sigma_old.squeeze(2)
+            mean_mu_olds_factor = torch.relu(self.mean_mu_olds_factor)
+            mean_mu_olds = (mean_mu_olds.squeeze(2) * step * (1 - mean_mu_olds_factor) +
+                            mu_old * mean_mu_olds_factor) / (step + 1)
+        additional["mean_mu_olds"] = mean_mu_olds.unsqueeze(2)
 
-        single_step=renormalize_input_length(self.single_step.expand(batch_size, 1),
-                                               source_lengths_tensor,
-                                               (self.max_len - 1))
+        single_step = renormalize_input_length(self.single_step.expand(batch_size, 1),
+                                               source_lengths_tensor - 1,
+                                               self.max_len - 1)
 
-        shared=[mu_old, mean_attn_old, rel_counter_decoder, single_step]
-        if self.is_content_attn:
-            shared=shared + [mean_content_old]
+        dict_features = dict(mean_attn_old=mean_attn_old,
+                             rel_counter_decoder=rel_counter_decoder,
+                             abs_counter_decoder=abs_counter_decoder,
+                             sigma_old=sigma_old,
+                             mu_old=mu_old,
+                             single_step=single_step,
+                             source_lengths=source_lengths_tensor.unsqueeze(-1),
+                             bias=self.bias.expand(batch_size, 1),
+                             mean_content_old=mean_content_old,
+                             mean_mu_olds=mean_mu_olds)
 
-        not_shared=[sigma_old,
-                      abs_counter_decoder,
-                      source_lengths_tensor.unsqueeze(-1)]
-        additional_positioning_features=shared + not_shared
+        # next line needed for python < 3.6 . for higher can use
+        # list(dict_mu_weights.values())
+        ordered_blocks = [dict_features[l] for l in self.bb_labels]
+        building_blocks = torch.cat(ordered_blocks, dim=1)
 
-        positioning_inputs=torch.cat([decoder_outputs.squeeze(1)] +
-                                       additional_positioning_features,
+        not_shared = ["sigma_old", "abs_counter_decoder", "source_lengths",
+                      "mu_old", "mean_mu_olds"] + (["mean_content_old"]
+                                                   if self.is_content_attn else [])
+        pos_features_labels = set(l for l in (self.bb_labels + not_shared) if l != "bias")
+        additional_pos_features = [dict_features[l] for l in pos_features_labels]
+
+        positioning_inputs = torch.cat([decoder_outputs.squeeze(1)] + additional_pos_features,
                                        dim=1)
-
-        if self.is_bb_bias:
-            bias=self.bias.expand(batch_size, 1)
-            shared += [bias]
-
-        assert_text="building_blocks and their labels should map to each other."
-        assert len(shared) == len(self.building_blocks_labels), assert_text
-        building_blocks=torch.cat(shared, dim=1)
 
         return positioning_inputs, building_blocks
 
     def _compute_parameters(self, positioning_inputs, building_blocks, step,
                             source_lengths_tensor, additional):
         """Compute the parameters of the positioning function."""
-        batch_size=positioning_inputs.size(0)
+        batch_size = positioning_inputs.size(0)
 
         if self.is_recursive:
             if step == 0:
-                additional["positioner_hidden"]=replicate_hidden0(self.hidden0,
+                additional["positioner_hidden"] = replicate_hidden0(self.hidden0,
                                                                     batch_size)
-            positioning_inputs, positioner_hidden=self.rnn(positioning_inputs.unsqueeze(1),
-                                                             additional['positioner_hidden'])
-            positioning_inputs=positioning_inputs.squeeze(1)
-            additional['positioner_hidden']=positioner_hidden
+            positioning_outputs, positioner_hidden = self.rnn(positioning_inputs.unsqueeze(1),
+                                                              additional['positioner_hidden'])
+            positioning_outputs = positioning_outputs.squeeze(1)
+            additional['positioner_hidden'] = positioner_hidden
+        else:
+            positioning_outputs = positioning_inputs
 
-        mu_weights=self.mu_weights_generator(positioning_inputs)
-        sigma=self.sigma_generator(positioning_inputs)
-
-        sigma=self.min_sigma + sigma.unsqueeze(1)
+        mu_weights = self.mu_weights_generator(positioning_outputs)
+        # ["mu_old", "mean_attn_old", "rel_counter_decoder", "single_step"]
+        # ["mean_content_old"] ["bias"]
 
         if self.is_building_blocks_mu:
+            bb_labels_old = [l for l in ["mu_old", "mean_attn_old", "mean_content_old"]
+                             if l in self.bb_labels]
 
-            if self.is_dev_mode:
-                additional['test']['mu_weights']=mu_weights
-                additional['test']['building_blocks']=building_blocks
+            # REGULARIZATION
+            if self.is_reg_round_weights:
+                # used to round mu weight without forcing
+                additional["losses"
+                           ]["round_weights"] = torch.abs(mu_weights -
+                                                          mu_weights.detach().round()
+                                                          ).mean()
+
+            if self.is_reg_bb_weights:
+                # used because the building blocks are highly dependant
+                # but maybe not important now that rounds + clamp
+                additional["losses"
+                           ]["mu_weights"] = regularization_loss(mu_weights,
+                                                                 p=self.lp_reg_weights,
+                                                                 dim=-1).mean()
+
+            if self.is_reg_const_weights:
+                # regularizes the constant values that could be used by the network
+                # to bypass the other buidling blocks by having the weights = mu
+
+                # no need of regularizing the bias weight when it's rounded
+                add_bias = (self.is_bb_bias and
+                            self.rounder_weights is None and
+                            not self.is_reg_round_weights)
+                reg_labels_const = ["single_step"] + (["bias"] if add_bias else [])
+                w_idcs_const = get_indices(self.bb_labels, reg_labels_const)
+
+                additional["losses"
+                           ]["const_weights"] = regularization_loss(mu_weights[:, w_idcs_const],
+                                                                    p=self.lp_reg_weights,
+                                                                    dim=-1).mean()
+
+            if self.is_reg_old_weights:
+                # regularizes the weights of the building blocks that are not stable
+                # yet (because they depend on positioning attention)
+                idcs_pos_old = get_indices(self.bb_labels, ["mu_old", "mean_attn_old"])
+
+                additional["losses"
+                           ]["old_pos_weights"] = regularization_loss(mu_weights[:, idcs_pos_old],
+                                                                      p=self.lp_reg_weights,
+                                                                      dim=-1).mean()
+
+            # TRANFORM
+            # noising
+            building_blocks = self.bb_noise(building_blocks, is_update=(step == 0))
+            mu_weights = self.bb_weights_noise(mu_weights, is_update=(step == 0))
+
+            dict_mu_weights = dict(zip(self.bb_labels, mu_weights.unbind(-1)))
+
+            if self.bb_const_noise.sigma != 0:
+                add_bias = (self.is_bb_bias and
+                            self.rounder_weights is None and
+                            not self.is_reg_round_weights)
+                noise_labels_const = ["single_step"] + (["bias"] if add_bias else [])
+                for i, l in enumerate(noise_labels_const):
+                    dict_mu_weights[l] = self.bb_const_noise(dict_mu_weights[l],
+                                                             is_update=(step == 0 and i == 0))
+
+            # initialization helper
+            N_INITIALIZATION_STEPS = 100
+            if additional["training_step"] < N_INITIALIZATION_STEPS:
+                # adds either 0.5 or -0.5
+                dict_mu_weights["rel_counter_decoder"] = (dict_mu_weights["rel_counter_decoder"] +
+                                                          0.5 - (additional["training_step"] % 2))
+
+            # clamping
+            if self.is_clamp_weights:
+                for l in bb_labels_old + (["bias"] if self.is_bb_bias else []):
+                    dict_mu_weights[l] = clamp(dict_mu_weights[l],
+                                               minimum=0., maximum=1., is_leaky=True)
+
+                dict_mu_weights["rel_counter_decoder"] = clamp(dict_mu_weights["rel_counter_decoder"],
+                                                               minimum=-1.,
+                                                               maximum=1.,
+                                                               is_leaky=True)
+
+            self._add_to_test(mu_weights, 'soft_mu_weights', additional)
+
+            # rounding
+            if self.rounder_weights is not None:
+                for i, l in enumerate(bb_labels_old + ["single_step",
+                                                       "rel_counter_decoder"]):
+                    dict_mu_weights[l] = self.rounder_weights(dict_mu_weights[l],
+                                                              is_update=(step == 0 and i == 0))
+
+                if self.is_bb_bias:
+                    # rounds up to 0.25. IS IT NECESSARY ?????????????????
+                    dict_mu_weights["bias"] = self.rounder_weights(dict_mu_weights["bias"] * 2.,
+                                                                   is_update=False) / 2.
+
+            # next line needed for python < 3.6 . for higher can use
+            # list(dict_mu_weights.values())
+            ordered_weights = [dict_mu_weights[l] for l in self.bb_labels]
+            mu_weights = torch.stack(ordered_weights, dim=-1)
+
+            if self.is_reg_variance_weights:
+                # forces the weights to always be relatively similar
+                # after rounding
+                if step != 0:
+                    additional["losses"
+                               ]["variance_weights"] = regularization_loss((mu_weights -
+                                                                            additional["mu_weights"]),
+                                                                           p=0.5,
+                                                                           dim=-1).mean()
+
+                additional["mu_weights"] = mu_weights
+
+            # IF WANT TO PLOT AFTER ROUNDING
+            self._add_to_test([mu_weights, building_blocks],
+                              ['mu_weights', 'building_blocks'],
+                              additional)
 
             self._add_to_visualize([mu_weights, building_blocks],
                                    ['mu_weights', 'building_blocks'],
                                    additional)
 
-            if self.is_l1_bb_weights:
-                # kwargs = dict(max_proportion=1e-2)
-                # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                additional["losses"]["mu_weights"]=torch.abs(mu_weights).mean()
-                                                      #, kwargs)
-            if self.is_l1_bias_weight:
-                # kwargs = dict(max_proportion=1e-2)
-                # unnecessarily saves multiple times kwargs (i.e it's always the same)
-                # additional["losses"]["bias_weight"] = torch.abs(mu_weights[:, -1:]).mean()
-                                                       #, kwargs)
+            if self.is_l0_bb_weights:
+                # same as bm in the else statement but samples which parameters
+                # can use first
+                self.linear_l0_weights.set_weights(mu_weights.unsqueeze(2))
+                mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
+                additional["losses"
+                           ]["l0_weights"] = self.linear_l0_weights.regularization()
+                mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
+            else:
+                # (batch, 1, 5) * (batch, 5, 1) -> (batch, 1, 1)
+                mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
 
-                additional["losses"]["constant_weights"]=(torch.abs(mu_weights[:, -1]).mean() +
-                                                            torch.abs(mu_weights[:, 3]).mean()) / 2
-
-            if self.is_l1_old_weights:
-                additional["losses"]["old_weights"]=torch.abs(mu_weights[:, :2]).mean()
-
-                if self.is_content_attn:
-                    additional["losses"]["old_weights"]=(additional["losses"]["old_weights"] * 2 +
-                                                           torch.abs(mu_weights[:, -2]).mean()) / 3
-
-
-            building_blocks=self.bb_noise(building_blocks, is_update=(step == 0))
-            mu_weights=self.bb_weights_noise(mu_weights, is_update=(step == 0))
-            # (batch, 1, 5) * (batch, 5, 1) -> (batch, 1, 1)
-            mu=torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
+            if self.rounder_mu is not None:
+                # rounding to words
+                normalizer = (source_lengths_tensor - 1).unsqueeze(1).unsqueeze(1)
+                mu = self.rounder_mu(mu * normalizer, is_update=(step == 0)
+                                     ) / normalizer
         else:
-            mu=torch.sigmoid(mu_weights.unsqueeze(1))
+            mu = torch.sigmoid(mu_weights.unsqueeze(1))
 
         if self.is_clamp_mu:
-            mu=clamp(mu, minimum=0, maximum=1, is_leaky=True)
+            mu_old = mu
+            mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
+            if self.is_reg_clamp_mu:
+                additional["losses"
+                           ]["clamp_mu"] = torch.norm(mu - mu_old, p=2)
 
-        is_update_sigma=self.training and step == 0
-        sigma=torch.max(sigma,
-                          torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
+        is_update_sigma = self.training and step == 0
+
+        if self.n_steps_prepare_pos is None:
+            if self.is_force_sigma:
+                sigma = torch.zeros_like(mu) + self.get_sigma(is_update_sigma)
+            else:
+                # KEEPING FOR TESTING OLD STYLE !!!!!!!!!!!!
+                sigma = self.sigma_generator(positioning_outputs)
+                sigma = self.min_sigma + sigma.unsqueeze(1)
+                sigma = torch.max(sigma,
+                                  torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
+
+        else:
+            # probably the only thing you need is to use this but reduce annealing time
+            # to 0.05 and final min sigma annealing to 1
+            # the add 0.5 to sigma before relu such that the initial value
+            # when start training is ~1 which is ~= to last value of annealing
+            # so no jump
+
+            # if uses att mix wait = 0.05 then you wouldn't have the issue of
+            # the confidence being trained when the sigma is not actually being trained
+            current_min_sigma = self.get_sigma(is_update_sigma)
+
+            if current_min_sigma > self.get_sigma.final_value:
+                # if you are still annealing min sigma then don't backprop
+                # to sigma generator
+                sigma = current_min_sigma + torch.zeros_like(mu)
+            else:
+                sigma = F.leaky_relu(self.min_sigma + self.sigma_generator(positioning_outputs))
+                sigma = self.min_sigma + sigma.unsqueeze(1)
+                # because using leaky relu still has to add a hard limit to be sure that
+                # never division by 0
+                sigma = torch.max(sigma, torch.zeros_like(sigma) + self.min_sigma / 2)
 
         if self.is_relative_sigma:
-            sigma=renormalize_input_length(sigma, source_lengths_tensor, 1)
+            sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
 
         return mu, sigma
 
-    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=10):
+    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
         """Every `save_every` batch, adds a certain variable to the `visualization`
         sub-dictionary of additional. Such variables should be the ones that are
         interpretable, and for which the size is independant of the source length.
@@ -477,8 +746,23 @@ class PositionAttention(nn.Module):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values=values.mean(0)
-                additional["visualize"][keys]=values
+                    values = values.mean(0).cpu()
+                additional["visualize"][keys] = values
+
+    def _add_to_test(self, values, keys, additional):
+        """
+        Save a variable to additional["test"] only if dev mode is on. The
+        variables saved should be the interpretable ones for which you want to
+        know the value of during test time.
+
+        Batch size should always be 1 when predicting with dev mode !
+        """
+        if self.is_dev_mode:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_test(v, k, additional)
+            else:
+                additional["test"][keys] = values
 
 
 class AttentionMixer(nn.Module):
@@ -499,39 +783,41 @@ class AttentionMixer(nn.Module):
                  is_mlps=True,
                  is_pos_perc_weight_conf=True,
                  is_dev_mode=False,
-                 n_steps_wait=0):  # TO DOC
+                 n_steps_wait=0,  # TO DOC
+                 rounder_perc_kwargs={}):    # TO DOC
         super(AttentionMixer, self).__init__()
 
-        self.is_dev_mode=is_dev_mode
-        self.is_pos_perc_weight_conf=is_pos_perc_weight_conf
+        self.is_dev_mode = is_dev_mode
+        self.is_pos_perc_weight_conf = is_pos_perc_weight_conf
         self.n_steps_wait = n_steps_wait
+        self.rounder_perc = _get_rounder(**rounder_perc_kwargs)
 
-        n_additional_pos_perc_inputs=3
+        n_additional_pos_perc_inputs = 3
 
         # should be under if not is_predict_conf (i.e net else)
         # but keeping while testing `additional_controller_features`
-        self.position_perc0=Parameter(torch.tensor(0.5))
+        self.position_perc0 = Parameter(torch.tensor(0.5))
 
         if not self.is_pos_perc_weight_conf:
             if is_mlps:
-                self.pos_perc_generator=MLP(decoder_output_size +
+                self.pos_perc_generator = MLP(decoder_output_size +
                                               n_additional_pos_perc_inputs,
                                               hidden_size, 1)
             else:
-                self.pos_perc_generator=nn.Linear(decoder_output_size +
+                self.pos_perc_generator = nn.Linear(decoder_output_size +
                                                     n_additional_pos_perc_inputs,
                                                     1)
 
-            self.posperc_to_prob=ProbabilityConverter()
+            self.posperc_to_prob = ProbabilityConverter()
 
         self.reset_parameters()
 
     def set_dev_mode(self, value=True):
-        self.is_dev_mode=value
+        self.is_dev_mode = value
 
     def reset_parameters(self):
         self.apply(weights_init)
-        self.position_perc0=Parameter(torch.tensor(0.5))
+        self.position_perc0 = Parameter(torch.tensor(0.5))
 
     def extra_repr(self):
         return get_extra_repr(self,
@@ -567,7 +853,7 @@ class AttentionMixer(nn.Module):
         """
         batch_size = decoder_output.size(0)
 
-        if additional["training_step"] > self.n_steps_wait:
+        if additional["training_step"] >= self.n_steps_wait:
             if self.is_pos_perc_weight_conf:
                 position_perc = pos_confidence / (pos_confidence + content_confidence)
             else:
@@ -584,11 +870,34 @@ class AttentionMixer(nn.Module):
                 position_perc = self.pos_perc_generator(position_perc_inputs)
                 position_perc = self.posperc_to_prob(position_perc)
 
-            position_perc = position_perc.unsqueeze(-1)
+            position_perc = position_perc
+
+            self._add_to_test(position_perc, "position_percentage", additional)
+
+            if self.rounder_perc is not None:
+                position_perc = self.rounder_perc(position_perc)
         else:
-            position_perc = 0.5
+            position_perc = torch.tensor(0.5).expand(batch_size, 1)
+
+            self._add_to_test(position_perc, "position_percentage", additional)
 
         # COnvex combination
-        attn=(pos_attn * position_perc + (1 - position_perc) * content_attn)
+        attn = (pos_attn * position_perc.unsqueeze(-1) +
+                (1 - position_perc.unsqueeze(-1)) * content_attn)
 
         return attn, position_perc
+
+    def _add_to_test(self, values, keys, additional):
+        """
+        Save a variable to additional["test"] only if dev mode is on. The
+        variables saved should be the interpretable ones for which you want to
+        know the value of during test time.
+
+        Batch size should always be 1 when predicting with dev mode !
+        """
+        if self.is_dev_mode:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_test(v, k, additional)
+            else:
+                additional["test"][keys] = values

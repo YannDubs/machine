@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from seq2seq.util.helpers import (AnnealedGaussianNoise, AnnealedDropout,
-                                  get_extra_repr)
+from seq2seq.util.helpers import get_extra_repr
+from seq2seq.util.torchextend import AnnealedGaussianNoise, AnnealedDropout
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

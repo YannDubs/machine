@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 
 from seq2seq.util.initialization import get_hidden0, weights_init, replicate_hidden0
-from seq2seq.util.helpers import(MLP, ProbabilityConverter, renormalize_input_length,
-                                 get_rnn, AnnealedGaussianNoise, AnnealedDropout,
-                                 get_extra_repr)
+from seq2seq.util.helpers import renormalize_input_length, get_rnn, get_extra_repr
+from seq2seq.util.torchextend import (MLP, ProbabilityConverter, AnnealedDropout,
+                                      AnnealedGaussianNoise)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -39,11 +39,15 @@ def _get_counters(max_len, is_abscounter, is_relcounter, is_rotcounters,
 
     if is_relcounter:
         rel_counter = increments / (max_len - 1)
-        rel_counter = renormalize_input_length(rel_counter, input_lengths_tensor, (max_len - 1))
+        rel_counter = renormalize_input_length(rel_counter,
+                                               input_lengths_tensor - 1,
+                                               max_len - 1)
 
     if is_rotcounters:
         angles = math.pi * increments / (max_len - 1)
-        angles = renormalize_input_length(angles, input_lengths_tensor, (max_len - 1))
+        angles = renormalize_input_length(angles,
+                                          input_lengths_tensor - 1,
+                                          (max_len - 1))
         rot_counters = torch.cat([torch.cos(angles), torch.sin(angles)], dim=2)
 
     if any(c.nelement() != 0 for c in (abs_counter, rel_counter, rot_counters)):

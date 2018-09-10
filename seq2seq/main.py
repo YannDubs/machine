@@ -23,7 +23,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 LOG_FORMAT = '%(asctime)s %(name)-12s %(levelname)-8s %(message)s'
 log_level = "warning"
-logging.basicConfig(format=LOG_FORMAT, level=getattr(logging, log_level.upper()))
+logging.basicConfig(format=LOG_FORMAT, level=getattr(
+    logging, log_level.upper()))
 logger = logging.getLogger(__name__)
 
 
@@ -87,30 +88,45 @@ def get_seq2seq_model(src,
                       anneal_kq_dropout_input=0,
                       anneal_kq_noise_input=0,
                       anneal_kq_dropout_output=0,
-                      anneal_kq_noise_output=0,
+                      anneal_kq_noise_output=0.15,
                       is_normalize_encoder=True,
                       is_abscounter=False,
                       is_relcounter=False,
                       is_rotcounters=False,
                       is_postcounter=False,
                       is_position_attn=True,
+                      n_steps_prepare_pos=None,
                       positioning_method="gaussian",
                       is_posrnn=True,
                       is_relative_sigma=True,
                       is_clamp_mu=True,
+                      is_force_sigma=False,  # TO DOC
                       anneal_min_sigma=0.1,
                       is_building_blocks_mu=True,
-                      is_bb_bias=False,
-                      is_l1_bb_weights=False,
-                      is_l1_bias_weight=False,  # TO DOC / DEV MODE
-                      is_l1_old_weights=False,  # TO DOC / DEV MODE
+                      is_bb_bias=True,
+                      is_sequential_attn=False,
+                      is_reg_bb_weights=False,
+                      is_reg_const_weights=False,  # TO DOC / DEV MODE
+                      is_reg_old_weights=False,  # TO DOC / DEV MODE
+                      is_reg_clamp_mu=False,  # TO DOC OR EVEN ENFORCE
+                      is_reg_round_weights=False,  # TO DOC
+                      is_reg_variance_weights=False,  # TO DOC
+                      is_l0_bb_weights=False,  # TO DOC
+                      lp_reg_weights=1,  # TO DOC
+                      is_clamp_weights=True,  # TO DOC
+                      rate_start_round=0,  # TO DOC
+                      anneal_temp_round=0.1,  # TO DOC
+                      rounder_weights=None,  # TO DOC
+                      rounder_mu=None,  # TO DOC
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
+                      anneal_bb_const_noise=0,  # DEV MODE : which best
                       is_pos_perc_weight_conf=True,
                       rate_attmix_wait=0,  # TO DOC / DEV MODE
+                      rounder_perc=None,   # TO DOC / DEV MODE
                       is_dev_mode=False,
                       is_viz_train=False,
-                      is_mid_focus=False):
+                      is_mid_focus=False):  # TO DOC
     """Return a initialized extrapolator model.
 
     Args:
@@ -246,7 +262,7 @@ def get_seq2seq_model(src,
             THis has the advantage of letting the network go to absolut positions
             (ex: middle, end, ...). THe disadvantage being that the model will often
             stop using other building blocks and thus be less general.
-        is_l1_bb_weights (bool, optional): whether to use a l1 regularization
+        is_reg_bb_weights (bool, optional): whether to use a l1 regularization
             on the postional attention mu's building block weights. This can
             be usefull if the building blocks are gihly correlyted.
 
@@ -266,7 +282,8 @@ def get_seq2seq_model(src,
     """
     assert max_len > 1, "Max len has to be greater than 1"
     if not is_content_attn and (is_key or is_query):
-        warnings.warn("`is_key` and `is_query` are useless when no content attention. Setting them to False.")
+        warnings.warn(
+            "`is_key` and `is_query` are useless when no content attention. Setting them to False.")
         is_key = False
         is_query = False
 
@@ -274,10 +291,14 @@ def get_seq2seq_model(src,
     rate2steps = Rate2Steps(total_training_calls)
 
     # Encoder
-    kq_annealed_dropout_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_dropout_input))
-    kq_annealed_dropout_output_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_dropout_output))
-    kq_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_noise_input))
-    kq_annealed_noise_output_kwargs = dict(n_steps_interpolate=rate2steps(anneal_kq_noise_output))
+    kq_annealed_dropout_kwargs = dict(
+        n_steps_interpolate=rate2steps(anneal_kq_dropout_input))
+    kq_annealed_dropout_output_kwargs = dict(
+        n_steps_interpolate=rate2steps(anneal_kq_dropout_output))
+    kq_annealed_noise_kwargs = dict(
+        n_steps_interpolate=rate2steps(anneal_kq_noise_input))
+    kq_annealed_noise_output_kwargs = dict(
+        n_steps_interpolate=rate2steps(anneal_kq_noise_output))
 
     key_kwargs = dict(output_size=key_size,
                       is_contained_kv=is_contained_kv,
@@ -341,11 +362,27 @@ def get_seq2seq_model(src,
                                     initial_sigma=0.1,
                                     final_sigma=0,
                                     mode="linear")
+    bb_const_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_bb_weights_noise),
+                                          initial_sigma=0.5,
+                                          final_sigma=0,
+                                          mode="linear")
 
-    position_kwargs = dict(is_recursive=is_posrnn,
+    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round)},
+                      "stochastic": {"start_step": rate_start_round},
+                      None: {}}
+
+    rounder_weights_kwargs = dict(name=rounder_weights)
+    rounder_weights_kwargs.update(rounders_kwars[rounder_weights])
+
+    rounder_mu_kwargs = dict(name=rounder_mu)
+    rounder_mu_kwargs.update(rounders_kwars[rounder_mu])
+
+    position_kwargs = dict(n_steps_prepare_pos=n_steps_prepare_pos,
+                           is_recursive=is_posrnn,
                            positioning_method=positioning_method,
                            is_relative_sigma=is_relative_sigma,
-                           n_steps_interpolate_min_sigma=rate2steps(anneal_min_sigma),
+                           n_steps_interpolate_min_sigma=rate2steps(
+                               anneal_min_sigma),
                            rnn_cell=rnn_cell,
                            is_mlps=is_mlps,
                            is_weight_norm_rnn=is_weight_norm_rnn,
@@ -353,20 +390,37 @@ def get_seq2seq_model(src,
                            is_dev_mode=is_dev_mode,
                            is_building_blocks_mu=is_building_blocks_mu,
                            is_bb_bias=is_bb_bias,
-                           is_l1_bb_weights=is_l1_bb_weights,
-                           is_l1_bias_weight=is_l1_bias_weight,
-                           is_l1_old_weights=is_l1_old_weights,
+                           is_sequential_attn=is_sequential_attn,
+                           is_reg_bb_weights=is_reg_bb_weights,
+                           is_reg_const_weights=is_reg_const_weights,
+                           is_reg_old_weights=is_reg_old_weights,
+                           is_reg_clamp_mu=is_reg_clamp_mu,
+                           is_reg_round_weights=is_reg_round_weights,
+                           is_reg_variance_weights=is_reg_variance_weights,
+                           is_l0_bb_weights=is_l0_bb_weights,
+                           is_clamp_weights=is_clamp_weights,
+                           rounder_weights_kwargs=rounder_weights_kwargs,
+                           rounder_mu_kwargs=rounder_mu_kwargs,
                            bb_weights_annealed_noise_kwargs=bb_weights_annealed_noise_kwargs,
-                           bb_annealed_noise_kwargs=bb_annealed_noise_kwargs)
+                           bb_annealed_noise_kwargs=bb_annealed_noise_kwargs,
+                           bb_const_annealed_noise_kwargs=bb_const_annealed_noise_kwargs,
+                           is_force_sigma=is_force_sigma)
 
     content_kwargs = dict(method=content_method)
 
+    rounder_perc_kwargs = dict(name=rounder_perc)
+    rounder_perc_kwargs.update(rounders_kwars[rounder_perc])
+
+    n_steps_wait = (rate2steps(rate_attmix_wait)
+                    if n_steps_prepare_pos is None else n_steps_prepare_pos)
     attmix_kwargs = dict(is_mlps=is_mlps,
                          is_pos_perc_weight_conf=is_pos_perc_weight_conf,
                          is_dev_mode=is_dev_mode,
-                         n_steps_wait=rate2steps(rate_attmix_wait))
+                         n_steps_wait=n_steps_wait,
+                         rounder_perc_kwargs=rounder_perc_kwargs)
 
-    embedding_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_decoder_noise_input))
+    embedding_noise_kwargs = dict(
+        n_steps_interpolate=rate2steps(anneal_decoder_noise_input))
 
     decoder_hidden_size = encoder.bidirectional_hidden_size
 
@@ -399,7 +453,8 @@ def get_seq2seq_model(src,
                          is_viz_train=is_viz_train,
                          is_mid_focus=is_mid_focus)
 
-    mid_dropout_kwargs = dict(n_steps_interpolate=rate2steps(anneal_mid_dropout))
+    mid_dropout_kwargs = dict(
+        n_steps_interpolate=rate2steps(anneal_mid_dropout))
     mid_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_mid_noise))
 
     seq2seq = Seq2seq(encoder, decoder,
@@ -413,7 +468,8 @@ def get_seq2seq_model(src,
 def train(train_path,
           dev_path,
           oneshot_path=None,
-          metric_names=["word accuracy", "sequence accuracy", "final target accuracy"],
+          metric_names=["word accuracy",
+                        "sequence accuracy", "final target accuracy"],
           loss_names=["nll"],
           max_len=50,
           epochs=100,
@@ -440,12 +496,14 @@ def train(train_path,
           eos_weight=1,
           anneal_eos_weight=0,  # to doc : not tested + to hyperparmeter optimize
           _initial_eos_weight=0.05,  # to doc
-          use_attention="post-rnn",
-          content_method='dot',
+          use_attention="pre-rnn",
+          content_method='scaledot',
           is_basic_init=False,
           is_amsgrad=False,
+          rate_prepare_pos=None,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
-          is_confuse_query=False,
+          is_confuse_query=False,  # DEV MODE : TO DOC
+          grad_clip_value=None,   # DEV MODE : TO DOC
           _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.
@@ -539,9 +597,12 @@ def train(train_path,
     total_training_calls = math.ceil(epochs * len(train) / batch_size)
     rate2steps = Rate2Steps(total_training_calls)
 
+    n_steps_prepare_pos = (rate2steps(rate_prepare_pos)
+                           if rate_prepare_pos is not None else None)
     seq2seq = get_seq2seq_model(src, tgt, max_len, total_training_calls,
                                 use_attention=use_attention,
                                 content_method=content_method,
+                                n_steps_prepare_pos=n_steps_prepare_pos,
                                 **kwargs)
 
     n_parameters = sum([p.numel() for p in seq2seq.parameters()])
@@ -557,23 +618,27 @@ def train(train_path,
     metrics = get_metrics(metric_names, src, tgt, is_predict_eos)
 
     max_p_interpolators = dict()
-    max_p_interpolators.update(get_regularizers_positioner(total_training_calls))
+    max_p_interpolators.update(get_regularizers_positioner(total_training_calls,
+                                                           n_steps_prepare_pos=n_steps_prepare_pos))
 
     losses, loss_weights = get_losses(loss_names, tgt, is_predict_eos,
                                       eos_weight=eos_weight,
                                       total_training_calls=total_training_calls,
                                       max_p_interpolators=max_p_interpolators)
 
-    early_stopper = EarlyStopping(patience=patience) if (patience is not None) else None
+    early_stopper = EarlyStopping(patience=patience) if (
+        patience is not None) else None
 
     ### DEV MODE ###
     if anneal_eos_weight != 0:
         n_steps_interpolate_eos_weight = rate2steps(anneal_eos_weight)
 
         loss_weight_updater = LossWeightUpdater(indices=[tgt.eos_id],
-                                                initial_weights=[_initial_eos_weight],
+                                                initial_weights=[
+                                                    _initial_eos_weight],
                                                 final_weights=[eos_weight],
-                                                n_steps_interpolates=[n_steps_interpolate_eos_weight],
+                                                n_steps_interpolates=[
+                                                    n_steps_interpolate_eos_weight],
                                                 modes=["geometric"])
     else:
         loss_weight_updater = None
@@ -582,7 +647,8 @@ def train(train_path,
     final_teacher_forcing = 0 if anneal_teacher_forcing != 0 else initial_teacher_forcing
     teacher_forcing_kwargs = dict(initial_value=initial_teacher_forcing,
                                   final_value=final_teacher_forcing,
-                                  n_steps_interpolate=rate2steps(anneal_teacher_forcing),
+                                  n_steps_interpolate=rate2steps(
+                                      anneal_teacher_forcing),
                                   mode="linear")
 
     trainer = SupervisedTrainer(loss=losses,
@@ -596,7 +662,8 @@ def train(train_path,
                                 early_stopper=early_stopper,
                                 loss_weight_updater=loss_weight_updater,
                                 teacher_forcing_kwargs=teacher_forcing_kwargs,
-                                initial_model=_initial_model)
+                                initial_model=_initial_model,
+                                clip_value=grad_clip_value)
 
     if optim is None and is_amsgrad:
         optimizer_kwargs = {"amsgrad": True}

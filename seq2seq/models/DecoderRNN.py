@@ -12,9 +12,10 @@ from torch.nn.parameter import Parameter
 from .attention import ContentAttention, HardGuidance
 from .baseRNN import BaseRNN
 
-from seq2seq.util.helpers import (renormalize_input_length, AnnealedGaussianNoise,
-                                  get_rnn, get_extra_repr, format_source_lengths,
+from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
+                                  get_extra_repr, format_source_lengths,
                                   recursive_update)
+from seq2seq.util.torchextend import AnnealedGaussianNoise
 from seq2seq.util.initialization import weights_init, init_param
 from seq2seq.models.KVQ import QueryGenerator
 from seq2seq.models.Positioner import AttentionMixer, PositionAttention
@@ -22,8 +23,7 @@ from seq2seq.models.Positioner import AttentionMixer, PositionAttention
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-IS_X05 = False
-
+IS_X05 = True
 
 class DecoderRNN(BaseRNN):
     """
@@ -194,7 +194,7 @@ class DecoderRNN(BaseRNN):
                 n_additional_controller_features += 2  # mean_content_old / content_confidence_old
             if self.is_position_attn:
                 self.pos_confidence0 = Parameter(torch.tensor(0.5))
-                n_additional_controller_features += 3  # mu_old / sigma_old / pos_confidence_old
+                n_additional_controller_features += 4  # mu_old / sigma_old / mean_mu_olds / pos_confidence_old
             if self.is_content_attn and self.is_position_attn:
                 n_additional_controller_features += 1  # position_perc_old
 
@@ -256,6 +256,8 @@ class DecoderRNN(BaseRNN):
                                                   input_prediction_size)
 
         self.out = nn.Linear(input_prediction_size, self.output_size)
+
+
 
         self.reset_parameters()
 
@@ -559,6 +561,7 @@ class DecoderRNN(BaseRNN):
                                                   additional,
                                                   content_method_kwargs=content_method_kwargs,
                                                   confusers=confusers)
+
             prediction_input = self._combine_context(controller_output, context)
         else:
             prediction_input = controller_output
@@ -646,7 +649,7 @@ class DecoderRNN(BaseRNN):
 
         unormalized_counter = self.rel_counter.expand(batch_size, -1, 1)
         rel_counter_encoder = renormalize_input_length(unormalized_counter,
-                                                       source_lengths_tensor,
+                                                       source_lengths_tensor - 1,
                                                        self.max_len - 1)
 
         if self.is_content_attn:
@@ -688,6 +691,7 @@ class DecoderRNN(BaseRNN):
                                                                           additional["sigma"],
                                                                           mean_content_old,
                                                                           mean_attn_old,
+                                                                          additional["mean_mu_olds"],
                                                                           additional)
 
             additional["mu"] = mu
@@ -716,8 +720,8 @@ class DecoderRNN(BaseRNN):
 
             additional["position_percentage"] = pos_perc
             self._add_to_visualize(pos_perc, "position_percentage", additional)
-            self._add_to_test([content_confidence, pos_confidence, pos_perc],
-                              ["content_confidence", "pos_confidence", "position_percentage"],
+            self._add_to_test([content_confidence, pos_confidence],
+                              ["content_confidence", "pos_confidence"],
                               additional)
 
         additional["mean_attn"] = torch.bmm(attn,
@@ -748,7 +752,7 @@ class DecoderRNN(BaseRNN):
             if self.position_attention.is_recursive:
                 additional['positioner_hidden'] = None
 
-            for k in ["mu", "sigma", "mean_attn", "mean_content", "position_percentage"]:
+            for k in ["mu", "sigma", "mean_attn", "mean_content", "position_percentage", "mean_mu_olds"]:
                 additional[k] = None
 
         return additional
@@ -773,7 +777,7 @@ class DecoderRNN(BaseRNN):
 
         unormalized_counter = self.rel_counter[step:step + 1].expand(batch_size, 1)
         rel_counter_decoder = renormalize_input_length(unormalized_counter,
-                                                       source_lengths_tensor,
+                                                       source_lengths_tensor - 1,
                                                        self.max_len - 1
                                                        ).unsqueeze(1)
 
@@ -809,16 +813,18 @@ class DecoderRNN(BaseRNN):
                 if step != 0:
                     mu_old = additional["mu"]
                     sigma_old = additional["sigma"]
+                    mean_mu_olds = additional["mean_mu_olds"]
                     pos_confidence_old = additional["pos_confidence"].unsqueeze(1)
                 else:
                     mu_old = self.position_attention.mu0.expand(batch_size, 1
                                                                 ).unsqueeze(1)
                     sigma_old = self.position_attention.sigma0.expand(batch_size, 1
                                                                       ).unsqueeze(1)
+                    mean_mu_olds = mu_old
                     pos_confidence_old = self.pos_confidence0.expand(batch_size, 1
                                                                      ).unsqueeze(1)
 
-                additional_features.extend([mu_old, sigma_old, pos_confidence_old])
+                additional_features.extend([mu_old, sigma_old, mean_mu_olds, pos_confidence_old])
 
             if self.is_content_attn and self.is_position_attn:
                 if step != 0:
@@ -831,7 +837,7 @@ class DecoderRNN(BaseRNN):
 
         return additional_features
 
-    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=10):
+    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
         """Every `save_every` batch, adds a certain variable to the `visualization`
         sub-dictionary of additional. Such variables should be the ones that are
         interpretable, and for which the size is independant of the source length.
@@ -846,7 +852,7 @@ class DecoderRNN(BaseRNN):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values = values.mean(0)
+                    values = values.mean(0).cpu()
                 additional["visualize"][keys] = values
 
     def _add_to_test(self, values, keys, additional):

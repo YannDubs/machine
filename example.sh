@@ -21,4 +21,4 @@ echo "Evaluate model on test data"
 python evaluate.py --checkpoint_path $EXPT_DIR/$(ls -t $EXPT_DIR/ | head -1) --test_data $DEV_PATH
 
 echo "Run in inference mode"
-python infer.py --checkpoint_path $EXPT_DIR/$(ls -t $EXPT_DIR/ | head -1) 
+python infer.py --checkpoint_path $EXPT_DIR/$(ls -t $EXPT_DIR/ | head -1)

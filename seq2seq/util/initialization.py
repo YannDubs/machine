@@ -124,11 +124,15 @@ def replicate_hidden0(hidden, batch_size):
 def weights_init(module):
     """Initializes the weights of a module."""
     # bad but necessary for circular imports
-    from seq2seq.util.helpers import (MLP, AnnealedDropout, AnnealedGaussianNoise,
-                                      ProbabilityConverter)
+    from seq2seq.util.torchextend import (MLP, AnnealedDropout, AnnealedGaussianNoise,
+                                          ProbabilityConverter, StochasticRounding,
+                                          ConcreteRounding)
+    from seq2seq.util.l0 import L0Dense
 
     types_reset_param = (MLP, AnnealedDropout, AnnealedGaussianNoise,
-                         ProbabilityConverter)
+                         ProbabilityConverter, StochasticRounding, ConcreteRounding,
+                         L0Dense)
+
     if isinstance(module, types_reset_param):
         module.reset_parameters()
     if isinstance(module, nn.Embedding):
