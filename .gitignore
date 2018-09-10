@@ -5,8 +5,10 @@
 ..gitignore.icloud
 .DS_Store
 *.sublime-project
+*.sublime*
 
 notebooks/*
 venv*
 .ipynb_checkpoints/
 .idea
+
