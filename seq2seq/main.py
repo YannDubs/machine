@@ -108,7 +108,7 @@ def get_seq2seq_model(src,
                       is_reg_bb_weights=False,
                       is_reg_const_weights=False,  # TO DOC / DEV MODE
                       is_reg_old_weights=False,  # TO DOC / DEV MODE
-                      is_reg_clamp_mu=False,  # TO DOC OR EVEN ENFORCE
+                      is_reg_clamp_mu=True,  # TO DOC OR EVEN ENFORCE
                       is_reg_round_weights=False,  # TO DOC
                       is_reg_variance_weights=False,  # TO DOC
                       is_l0_bb_weights=False,  # TO DOC

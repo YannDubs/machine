@@ -27,7 +27,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     is_prepare_pos = n_steps_prepare_pos is not None
 
     n_steps_interpolate = rate2steps(0.3)
-    start_step = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     max_p_interpolators["mu_weights"
                         ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
@@ -37,7 +37,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     print("mu_weights:", max_p_interpolators["mu_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0.05)
-    start_step = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     max_p_interpolators["const_weights"
                         ] = HyperparameterInterpolator(5e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
@@ -47,7 +47,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     print("const_weights:", max_p_interpolators["const_weights"].extra_repr())
 
     # wait until positioning converges
-    n_steps_interpolate = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)  # should try 0.05
+    n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)  # should try 0.05
     start_step = rate2steps(0)  # should try 0
     # n_steps_interpolate = rate2steps(0.05 if is_prepare_pos else n_steps_prepare_pos)
     # start_step = rate2steps(0)
@@ -69,7 +69,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
 
     print("clamp_mu:", max_p_interpolators["clamp_mu"].extra_repr())
 
-    n_steps_interpolate = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     start_step = rate2steps(0)
     max_p_interpolators["round_weights"
                         ] = HyperparameterInterpolator(0, 5e-2, n_steps_interpolate,
@@ -79,7 +79,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     print("round_weights:", max_p_interpolators["round_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0.3)
-    start_step = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     max_p_interpolators["l0_weights"
                         ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
@@ -87,7 +87,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        mode="linear")
     print("l0_weights:", max_p_interpolators["l0_weights"].extra_repr())
 
-    n_steps_interpolate = rate2steps(n_steps_prepare_pos if is_prepare_pos else 0.05)
+    n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     start_step = rate2steps(0)
     max_p_interpolators["variance_weights"
                         ] = HyperparameterInterpolator(0., 1e-2, n_steps_interpolate,
@@ -208,7 +208,7 @@ class PositionAttention(nn.Module):
                  is_reg_bb_weights=False,
                  is_reg_const_weights=False,  # TO DOC
                  is_reg_old_weights=False,  # TO DOC
-                 is_reg_clamp_mu=False,  # TO DOC OR SIMPLY ENFORCE
+                 is_reg_clamp_mu=True,  # TO DOC OR SIMPLY ENFORCE
                  is_reg_round_weights=False,  # TO DOC
                  is_reg_variance_weights=False,  # TO DOC
                  is_l0_bb_weights=False,  # TO DOC
@@ -681,7 +681,6 @@ class PositionAttention(nn.Module):
                 mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
                 additional["losses"
                            ]["l0_weights"] = self.linear_l0_weights.regularization()
-                mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
             else:
                 # (batch, 1, 5) * (batch, 5, 1) -> (batch, 1, 1)
                 mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
