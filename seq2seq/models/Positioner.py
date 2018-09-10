@@ -95,6 +95,15 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        default=0,
                                                        mode="linear")
     print("variance_weights:", max_p_interpolators["variance_weights"].extra_repr())
+
+    n_steps_interpolate = rate2steps(0)
+    start_step = rate2steps(0)
+    max_p_interpolators["pos_perc"
+                        ] = HyperparameterInterpolator(1e-2, 1e-2, n_steps_interpolate,
+                                                       start_step=start_step,
+                                                       default=0,
+                                                       mode="linear")
+    print("pos_perc:", max_p_interpolators["pos_perc"].extra_repr())
     print()
 
     return max_p_interpolators
@@ -351,7 +360,7 @@ class PositionAttention(nn.Module):
 
         self.mu0 = Parameter(torch.tensor(0.0))
         self.sigma0 = Parameter(torch.tensor(sigma0))
-        self.mean_mu_olds_factor = Parameter(torch.tensor(0.0))
+        self.mean_attn_olds_factor = Parameter(torch.tensor(0.0))
 
         self.reset_parameters()
 
@@ -370,7 +379,7 @@ class PositionAttention(nn.Module):
         sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
         self.sigma0 = Parameter(torch.tensor(sigma0))
 
-        init_param(self.mean_mu_olds_factor, is_positive=True)
+        init_param(self.mean_attn_olds_factor, is_positive=True)
 
         self.get_sigma.reset_parameters()
 
@@ -399,7 +408,7 @@ class PositionAttention(nn.Module):
                 sigma_old,
                 mean_content_old,
                 mean_attn_old,
-                mean_mu_olds,
+                mean_attn_olds,  # TO DOC
                 additional):
         """Compute and return the positional attention, confidence, parameters.
 
@@ -436,7 +445,7 @@ class PositionAttention(nn.Module):
                                                                  sigma_old,
                                                                  mean_content_old,
                                                                  mean_attn_old,
-                                                                 mean_mu_olds,
+                                                                 mean_attn_olds,
                                                                  additional)
 
         mu, sigma = self._compute_parameters(positioning_inputs,
@@ -468,7 +477,7 @@ class PositionAttention(nn.Module):
         return pos_attn, pos_confidence, mu, sigma
 
     def _get_features(self, decoder_outputs, source_lengths_tensor, step, mu_old,
-                      sigma_old, mean_content_old, mean_attn_old, mean_mu_olds,
+                      sigma_old, mean_content_old, mean_attn_old, mean_attn_olds,
                       additional):
         """Gets the inputs and the buillding blocks for positioning. Together
         those will eb used to compute the parameters of the positioning function.
@@ -485,14 +494,14 @@ class PositionAttention(nn.Module):
         if step == 0:
             mu_old = self.mu0.expand(batch_size, 1)
             sigma_old = self.sigma0.expand(batch_size, 1)
-            mean_mu_olds = mu_old
+            mean_attn_olds = mu_old
         else:
             mu_old = mu_old.squeeze(2)
             sigma_old = sigma_old.squeeze(2)
-            mean_mu_olds_factor = torch.relu(self.mean_mu_olds_factor)
-            mean_mu_olds = (mean_mu_olds.squeeze(2) * step * (1 - mean_mu_olds_factor) +
-                            mu_old * mean_mu_olds_factor) / (step + 1)
-        additional["mean_mu_olds"] = mean_mu_olds.unsqueeze(2)
+            mean_attn_olds_factor = torch.relu(self.mean_attn_olds_factor)
+            mean_attn_olds = (mean_attn_olds.squeeze(2) * step * (1 - mean_attn_olds_factor) +
+                              mean_attn_old * mean_attn_olds_factor) / (step + 1)
+        additional["mean_attn_olds"] = mean_attn_olds.unsqueeze(2)
 
         single_step = renormalize_input_length(self.single_step.expand(batch_size, 1),
                                                source_lengths_tensor - 1,
@@ -507,7 +516,7 @@ class PositionAttention(nn.Module):
                              source_lengths=source_lengths_tensor.unsqueeze(-1),
                              bias=self.bias.expand(batch_size, 1),
                              mean_content_old=mean_content_old,
-                             mean_mu_olds=mean_mu_olds)
+                             mean_attn_olds=mean_attn_olds)
 
         # next line needed for python < 3.6 . for higher can use
         # list(dict_mu_weights.values())
@@ -515,8 +524,8 @@ class PositionAttention(nn.Module):
         building_blocks = torch.cat(ordered_blocks, dim=1)
 
         not_shared = ["sigma_old", "abs_counter_decoder", "source_lengths",
-                      "mu_old", "mean_mu_olds"] + (["mean_content_old"]
-                                                   if self.is_content_attn else [])
+                      "mu_old", "mean_attn_olds"] + (["mean_content_old"]
+                                                     if self.is_content_attn else [])
         pos_features_labels = set(l for l in (self.bb_labels + not_shared) if l != "bias")
         additional_pos_features = [dict_features[l] for l in pos_features_labels]
 
@@ -694,37 +703,38 @@ class PositionAttention(nn.Module):
 
         is_update_sigma = self.training and step == 0
 
-        if self.n_steps_prepare_pos is None:
-            if self.is_force_sigma:
-                sigma = torch.zeros_like(mu) + self.get_sigma(is_update_sigma)
-            else:
+        if self.is_force_sigma:
+            sigma = torch.zeros_like(mu) + self.get_sigma(is_update_sigma)
+
+        else:
+            if self.n_steps_prepare_pos is None:
                 # KEEPING FOR TESTING OLD STYLE !!!!!!!!!!!!
                 sigma = self.sigma_generator(positioning_outputs)
                 sigma = self.min_sigma + sigma.unsqueeze(1)
                 sigma = torch.max(sigma,
                                   torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
 
-        else:
-            # probably the only thing you need is to use this but reduce annealing time
-            # to 0.05 and final min sigma annealing to 1
-            # the add 0.5 to sigma before relu such that the initial value
-            # when start training is ~1 which is ~= to last value of annealing
-            # so no jump
-
-            # if uses att mix wait = 0.05 then you wouldn't have the issue of
-            # the confidence being trained when the sigma is not actually being trained
-            current_min_sigma = self.get_sigma(is_update_sigma)
-
-            if current_min_sigma > self.get_sigma.final_value:
-                # if you are still annealing min sigma then don't backprop
-                # to sigma generator
-                sigma = current_min_sigma + torch.zeros_like(mu)
             else:
-                sigma = F.leaky_relu(self.min_sigma + self.sigma_generator(positioning_outputs))
-                sigma = self.min_sigma + sigma.unsqueeze(1)
-                # because using leaky relu still has to add a hard limit to be sure that
-                # never division by 0
-                sigma = torch.max(sigma, torch.zeros_like(sigma) + self.min_sigma / 2)
+                # probably the only thing you need is to use this but reduce annealing time
+                # to 0.05 and final min sigma annealing to 1
+                # the add 0.5 to sigma before relu such that the initial value
+                # when start training is ~1 which is ~= to last value of annealing
+                # so no jump
+
+                # if uses att mix wait = 0.05 then you wouldn't have the issue of
+                # the confidence being trained when the sigma is not actually being trained
+                current_min_sigma = self.get_sigma(is_update_sigma)
+
+                if current_min_sigma > self.get_sigma.final_value:
+                    # if you are still annealing min sigma then don't backprop
+                    # to sigma generator
+                    sigma = current_min_sigma + torch.zeros_like(mu)
+                else:
+                    sigma = F.leaky_relu(self.min_sigma + self.sigma_generator(positioning_outputs))
+                    sigma = self.min_sigma + sigma.unsqueeze(1)
+                    # because using leaky relu still has to add a hard limit to be sure that
+                    # never division by 0
+                    sigma = torch.max(sigma, torch.zeros_like(sigma) + self.min_sigma / 2)
 
         if self.is_relative_sigma:
             sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
@@ -831,7 +841,9 @@ class AttentionMixer(nn.Module):
                 pos_attn,
                 pos_confidence,
                 position_perc_old,
-                additional):
+                additional,
+                is_reg_pos_perc=False  # TO DOC
+                ):
         """Compute and return the final attention and percentage of positional attention.
 
         Args:
@@ -880,6 +892,11 @@ class AttentionMixer(nn.Module):
             position_perc = torch.tensor(0.5).expand(batch_size, 1)
 
             self._add_to_test(position_perc, "position_percentage", additional)
+
+        if self.is_reg_pos_perc:
+            # if can solve with positioning pleas do
+            additional["losses"
+                       ]["pos_perc"] = 1 - position_perc.mean()
 
         # COnvex combination
         attn = (pos_attn * position_perc.unsqueeze(-1) +

@@ -194,7 +194,7 @@ class DecoderRNN(BaseRNN):
                 n_additional_controller_features += 2  # mean_content_old / content_confidence_old
             if self.is_position_attn:
                 self.pos_confidence0 = Parameter(torch.tensor(0.5))
-                n_additional_controller_features += 4  # mu_old / sigma_old / mean_mu_olds / pos_confidence_old
+                n_additional_controller_features += 4  # mu_old / sigma_old / mean_attn_olds / pos_confidence_old
             if self.is_content_attn and self.is_position_attn:
                 n_additional_controller_features += 1  # position_perc_old
 
@@ -691,7 +691,7 @@ class DecoderRNN(BaseRNN):
                                                                           additional["sigma"],
                                                                           mean_content_old,
                                                                           mean_attn_old,
-                                                                          additional["mean_mu_olds"],
+                                                                          additional["mean_attn_olds"],
                                                                           additional)
 
             additional["mu"] = mu
@@ -752,7 +752,7 @@ class DecoderRNN(BaseRNN):
             if self.position_attention.is_recursive:
                 additional['positioner_hidden'] = None
 
-            for k in ["mu", "sigma", "mean_attn", "mean_content", "position_percentage", "mean_mu_olds"]:
+            for k in ["mu", "sigma", "mean_attn", "mean_content", "position_percentage", "mean_attn_olds"]:
                 additional[k] = None
 
         return additional
@@ -813,18 +813,18 @@ class DecoderRNN(BaseRNN):
                 if step != 0:
                     mu_old = additional["mu"]
                     sigma_old = additional["sigma"]
-                    mean_mu_olds = additional["mean_mu_olds"]
+                    mean_attn_olds = additional["mean_attn_olds"]
                     pos_confidence_old = additional["pos_confidence"].unsqueeze(1)
                 else:
                     mu_old = self.position_attention.mu0.expand(batch_size, 1
                                                                 ).unsqueeze(1)
                     sigma_old = self.position_attention.sigma0.expand(batch_size, 1
                                                                       ).unsqueeze(1)
-                    mean_mu_olds = mu_old
+                    mean_attn_olds = mean_attn_old
                     pos_confidence_old = self.pos_confidence0.expand(batch_size, 1
                                                                      ).unsqueeze(1)
 
-                additional_features.extend([mu_old, sigma_old, mean_mu_olds, pos_confidence_old])
+                additional_features.extend([mu_old, sigma_old, mean_attn_olds, pos_confidence_old])
 
             if self.is_content_attn and self.is_position_attn:
                 if step != 0:
