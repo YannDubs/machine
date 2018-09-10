@@ -362,7 +362,7 @@ def get_seq2seq_model(src,
                                     initial_sigma=0.1,
                                     final_sigma=0,
                                     mode="linear")
-    bb_const_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_bb_weights_noise),
+    bb_const_annealed_noise_kwargs = dict(n_steps_interpolate=rate2steps(anneal_bb_const_noise),
                                           initial_sigma=0.5,
                                           final_sigma=0,
                                           mode="linear")
