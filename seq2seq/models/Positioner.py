@@ -794,12 +794,14 @@ class AttentionMixer(nn.Module):
                  is_pos_perc_weight_conf=True,
                  is_dev_mode=False,
                  n_steps_wait=0,  # TO DOC
+                 is_reg_pos_perc=False,  # TO DOC
                  rounder_perc_kwargs={}):    # TO DOC
         super(AttentionMixer, self).__init__()
 
         self.is_dev_mode = is_dev_mode
         self.is_pos_perc_weight_conf = is_pos_perc_weight_conf
         self.n_steps_wait = n_steps_wait
+        self.is_reg_pos_perc = is_reg_pos_perc
         self.rounder_perc = _get_rounder(**rounder_perc_kwargs)
 
         n_additional_pos_perc_inputs = 3
@@ -841,9 +843,7 @@ class AttentionMixer(nn.Module):
                 pos_attn,
                 pos_confidence,
                 position_perc_old,
-                additional,
-                is_reg_pos_perc=False  # TO DOC
-                ):
+                additional):
         """Compute and return the final attention and percentage of positional attention.
 
         Args:
