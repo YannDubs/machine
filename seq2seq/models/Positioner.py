@@ -47,8 +47,8 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     print("const_weights:", max_p_interpolators["const_weights"].extra_repr())
 
     # wait until positioning converges
-    n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)  # should try 0.05
-    start_step = rate2steps(0)  # should try 0
+    n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
+    start_step = rate2steps(0)
     # n_steps_interpolate = rate2steps(0.05 if is_prepare_pos else n_steps_prepare_pos)
     # start_step = rate2steps(0)
     max_p_interpolators["old_pos_weights"
@@ -307,10 +307,8 @@ class PositionAttention(nn.Module):
                                                   n_building_blocks_mu)
 
             if not self.is_force_sigma:
-                if is_mlps:
-                    self.sigma_generator = MLP(hidden_size, hidden_size // 2, 1)
-                else:
-                    self.sigma_generator = nn.Linear(hidden_size, 1)
+                # If recursive don't use MLP for sigma
+                self.sigma_generator = nn.Linear(hidden_size, 1)
         else:
             if is_mlps:
                 self.mu_weights_generator = MLP(input_size,
@@ -319,7 +317,7 @@ class PositionAttention(nn.Module):
 
                 if not self.is_force_sigma:
                     self.sigma_generator = MLP(input_size,
-                                               hidden_size,
+                                               hidden_size // 2,
                                                1)
             else:
                 self.mu_weights_generator = nn.Linear(input_size,
