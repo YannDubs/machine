@@ -195,6 +195,7 @@ class PositionAttention(nn.Module):
 
     def __init__(self, decoder_output_size, max_len,
                  n_steps_prepare_pos=None,  # TO DOC
+                 n_steps_init_help=0,  # TO DOC
                  positioning_method="gaussian",
                  is_mlps=True,
                  hidden_size=32,
@@ -232,6 +233,7 @@ class PositionAttention(nn.Module):
         super(PositionAttention, self).__init__()
 
         self.n_steps_prepare_pos = n_steps_prepare_pos
+        self.n_steps_init_help = n_steps_init_help
         self.positioning_method = positioning_method
         self.is_weight_norm_rnn = is_weight_norm_rnn
         self.is_content_attn = is_content_attn
@@ -617,8 +619,7 @@ class PositionAttention(nn.Module):
                                                              is_update=(step == 0 and i == 0))
 
             # initialization helper
-            N_INITIALIZATION_STEPS = 100
-            if additional["training_step"] < N_INITIALIZATION_STEPS:
+            if additional["training_step"] < self.n_steps_init_help:
                 # adds either 0.5 or -0.5
                 dict_mu_weights["rel_counter_decoder"] = (dict_mu_weights["rel_counter_decoder"] +
                                                           0.5 - (additional["training_step"] % 2))
