@@ -25,6 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 IS_X05 = True
 
+
 class DecoderRNN(BaseRNN):
     """
     Provides functionality for decoding in a seq2seq framework, with an option for attention.
@@ -256,8 +257,6 @@ class DecoderRNN(BaseRNN):
                                                   input_prediction_size)
 
         self.out = nn.Linear(input_prediction_size, self.output_size)
-
-
 
         self.reset_parameters()
 

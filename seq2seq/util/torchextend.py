@@ -381,7 +381,10 @@ class ConcreteRounding(nn.Module):
     """Applies rounding through gumbel/concrete softmax.
 
     Notes:
-        The gradients are unbiased but a lot slower than StochasticRounding.
+        - The gradients are unbiased but a lot slower than StochasticRounding.
+        - The temperature variable follows the implementation in the paper,
+            so it is the inverse of the temperature in `ProbabilityConverter`.
+            I.e lower temperature means higher slope.
 
     Args:
         min_p (float, optional): minimum probability of rounding to the "wrong"

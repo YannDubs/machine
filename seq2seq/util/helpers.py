@@ -272,6 +272,12 @@ class HyperparameterInterpolator:
             txt = "{}={}".format(value_name, self.final_value)
         return txt
 
+    @property
+    def is_annealing(self):
+        return (self.is_interpolate) and (
+            self.start_step < self.n_training_calls) and (
+            self.n_training_calls < (self.n_steps_interpolate + self.start_step))
+
     def __call__(self, is_update):
         if not self.is_interpolate:
             return self.final_value
@@ -282,7 +288,7 @@ class HyperparameterInterpolator:
         if self.start_step > self.n_training_calls:
             return self.default
 
-        if self.n_training_calls < self.n_steps_interpolate:
+        if self.is_annealing:
             current = self.initial_value
             if self.mode == "geometric":
                 current *= (self.factor ** self.n_training_calls)

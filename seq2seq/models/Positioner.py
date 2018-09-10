@@ -723,7 +723,7 @@ class PositionAttention(nn.Module):
                 # the confidence being trained when the sigma is not actually being trained
                 current_min_sigma = self.get_sigma(is_update_sigma)
 
-                if current_min_sigma > self.get_sigma.final_value:
+                if self.get_sigma.is_annealing:
                     # if you are still annealing min sigma then don't backprop
                     # to sigma generator
                     sigma = current_min_sigma + torch.zeros_like(mu)

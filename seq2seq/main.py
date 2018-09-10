@@ -101,7 +101,7 @@ def get_seq2seq_model(src,
                       rate_init_help=0,  # TO DOC
                       is_relative_sigma=True,
                       is_clamp_mu=True,
-                      is_force_sigma=False,  # TO DOC
+                      is_force_sigma=False,  # TO DOC / OR RM
                       anneal_min_sigma=0.1,
                       is_building_blocks_mu=True,
                       is_bb_bias=True,
@@ -369,7 +369,9 @@ def get_seq2seq_model(src,
                                           final_sigma=0,
                                           mode="linear")
 
-    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round)},
+    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round),
+                                   "initial_temperature": 5,
+                                   "mode":"geometric"},
                       "stochastic": {"start_step": rate_start_round},
                       None: {}}
 
