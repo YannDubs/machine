@@ -125,7 +125,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
 
 def _discrete_truncated_gaussian(x, mu, sigma):
     """Return normalized Gaussian_pdf(x)."""
-    x = torch.exp(-(x - mu)**2 / (2*sigma**2))
+    x = torch.exp(-(x - mu)**2 / (2 * sigma**2))
     x = F.normalize(x, p=1, dim=0)
     return x
 
@@ -576,6 +576,8 @@ class PositionAttention(nn.Module):
         # ["mu_old", "mean_attn_old", "rel_counter_decoder", "single_step"]
         # ["mean_content_old"] ["bias"]
 
+        self._add_to_test(mu_weights, 'raw_mu_weights', additional)
+
         if self.is_building_blocks_mu:
             bb_labels_old = [l for l in ["mu_old", "mean_attn_old", "mean_content_old"]
                              if l in self.bb_labels]
@@ -654,8 +656,6 @@ class PositionAttention(nn.Module):
                                                                minimum=-1.,
                                                                maximum=1.,
                                                                is_leaky=True)
-
-            self._add_to_test(mu_weights, 'soft_mu_weights', additional)
 
             # rounding
             if self.rounder_weights is not None:

@@ -412,6 +412,7 @@ class ConcreteRounding(nn.Module):
         if final_temperature is None:
             final_temperature = 2 / 3 if n_steps_interpolate == 0 else 0.5
 
+        self.start_step = start_step
         self.min_p = min_p
         self.get_temperature = HyperparameterInterpolator(initial_temperature,
                                                           final_temperature,
@@ -419,7 +420,10 @@ class ConcreteRounding(nn.Module):
                                                           mode=mode,
                                                           **kwargs)
 
+        self.n_training_calls = 0
+
     def reset_parameters(self):
+        self.n_training_calls = 0
         self.get_temperature.reset_parameters()
 
     def extra_repr(self):
@@ -433,6 +437,9 @@ class ConcreteRounding(nn.Module):
     def forward(self, x, is_update=True):
         if not self.training:
             return x.round()
+
+        if is_update and self.training:
+            self.n_training_calls += 1
 
         if self.start_step > self.n_training_calls:
             return x

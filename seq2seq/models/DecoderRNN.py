@@ -651,27 +651,6 @@ class DecoderRNN(BaseRNN):
                                                        source_lengths_tensor - 1,
                                                        self.max_len - 1)
 
-        if self.is_content_attn:
-            content_attn, content_confidence = self.content_attention(query,
-                                                                      keys,
-                                                                      additional,
-                                                                      **content_method_kwargs)
-            attn = content_attn
-
-            additional["content_confidence"] = content_confidence
-            additional["mean_content"] = torch.bmm(content_attn,
-                                                   rel_counter_encoder[:,
-                                                                       :content_attn.size(2), :]
-                                                   ).squeeze(2)
-            mean_content = additional["mean_content"]
-
-            self._add_to_visualize([content_confidence, mean_content],
-                                   ["content_confidence", "mean_content"],
-                                   additional)
-            self._add_to_test(content_attn, "content_attention", additional)
-        else:
-            mean_content = None
-
         if self.is_position_attn:
             if step == 0:
                 mean_attn_old = self.mean_attn0.expand(batch_size, 1)
@@ -681,7 +660,7 @@ class DecoderRNN(BaseRNN):
                     mean_content_old = None
             else:
                 mean_attn_old = additional["mean_attn"]
-                mean_content_old = mean_content
+                mean_content_old = additional["mean_content"]
 
             pos_attn, pos_confidence, mu, sigma = self.position_attention(controller_output,
                                                                           source_lengths,
@@ -706,6 +685,24 @@ class DecoderRNN(BaseRNN):
             self._add_to_test([pos_attn, mu, sigma],
                               ["position_attention", "mu", "sigma"],
                               additional)
+
+        if self.is_content_attn:
+            content_attn, content_confidence = self.content_attention(query,
+                                                                      keys,
+                                                                      additional,
+                                                                      **content_method_kwargs)
+            attn = content_attn
+
+            additional["content_confidence"] = content_confidence
+            additional["mean_content"] = torch.bmm(content_attn,
+                                                   rel_counter_encoder[:,
+                                                                       :content_attn.size(2), :]
+                                                   ).squeeze(2)
+
+            self._add_to_visualize([content_confidence, additional["mean_content"]],
+                                   ["content_confidence", "mean_content"],
+                                   additional)
+            self._add_to_test(content_attn, "content_attention", additional)
 
         if self.is_content_attn and self.is_position_attn:
             attn, pos_perc = self.mix_attention(controller_output,
