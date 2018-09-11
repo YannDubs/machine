@@ -387,6 +387,7 @@ class ConcreteRounding(nn.Module):
             I.e lower temperature means higher slope.
 
     Args:
+        start_step (int, optional): number of steps to wait for before starting rounding.
         min_p (float, optional): minimum probability of rounding to the "wrong"
             number. Useful to keep exploring.
         initial_temperature (float, optional): initial softmax temperature.
@@ -399,6 +400,7 @@ class ConcreteRounding(nn.Module):
     """
 
     def __init__(self,
+                 start_step=0,
                  min_p=0.01,
                  initial_temperature=1,
                  final_temperature=None,
@@ -421,7 +423,11 @@ class ConcreteRounding(nn.Module):
         self.get_temperature.reset_parameters()
 
     def extra_repr(self):
-        txt = self.get_temperature.extra_repr(value_name="temperature")
+
+        txt = get_extra_repr(self, always_shows=["start_step"])
+        interpolator_txt = self.get_temperature.extra_repr(value_name="temperature")
+
+        txt += ", " + interpolator_txt
         return txt
 
     def forward(self, x, is_update=True):
