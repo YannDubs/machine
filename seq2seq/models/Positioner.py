@@ -21,7 +21,20 @@ IS_SIGMA0_MINSIGMA = True
 
 
 def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
-    """Return the interpolators of the regularizers of the positioner."""
+    """Return the interpolators of the regularizers of the positioner.
+
+    Args:
+        total_training_calls (int): total planned number of calls to train the model.
+        n_steps_prepare_pos (int, optional): number of steps that are considered
+            as preparation for better convergence of the positioner.
+
+    Returns:
+        max_p_interpolators (dict of float):
+            Dictionary mapping the name of the additional loss to maximum percentage
+            of the loss that it can take. I.e if `max_p=1e-2`, for loss L then
+            this loss will be reduced such that it can only reach 1e-2 of the
+            NLL loss.
+    """
     rate2steps = Rate2Steps(total_training_calls)
     max_p_interpolators = dict()
     is_prepare_pos = n_steps_prepare_pos is not None
@@ -39,7 +52,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     n_steps_interpolate = rate2steps(0.05)
     start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     max_p_interpolators["const_weights"
-                        ] = HyperparameterInterpolator(5e-2, 5e-3, n_steps_interpolate,
+                        ] = HyperparameterInterpolator(5e-2, 1e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=5e-2,
                                                        mode="linear")
@@ -110,14 +123,14 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
 
 
 def _discrete_truncated_gaussian(x, mu, sigma):
-    """Samples a values from a gaussian pdf and normalizes those."""
-    x = torch.exp(-((x - mu) / sigma)**2)
+    """Return normalized Gaussian_pdf(x)."""
+    x = torch.exp(-(x - mu)**2 / (2*sigma**2))
     x = F.normalize(x, p=1, dim=0)
     return x
 
 
 def _discrete_truncated_laplace(x, mu, b):
-    """Samples a values from a laplacian pdf and normalizes those."""
+    """Return normalized Laplacian_pdf(x)."""
     x = torch.exp(-1 * torch.abs((x - mu) / b))
     x = F.normalize(x, p=1, dim=0)
     return x
@@ -709,6 +722,8 @@ class PositionAttention(nn.Module):
                 # KEEPING FOR TESTING OLD STYLE !!!!!!!!!!!!
                 sigma = self.sigma_generator(positioning_outputs)
                 sigma = self.min_sigma + sigma.unsqueeze(1)
+                if additional["training_step"] % 200 == 0:
+                    print(sigma.mean(), self.get_sigma(False))
                 sigma = torch.max(sigma,
                                   torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
 
@@ -721,9 +736,9 @@ class PositionAttention(nn.Module):
 
                 # if uses att mix wait = 0.05 then you wouldn't have the issue of
                 # the confidence being trained when the sigma is not actually being trained
-                current_min_sigma = self.get_sigma(is_update_sigma)
-
                 if self.get_sigma.is_annealing:
+                    current_min_sigma = self.get_sigma(is_update_sigma)
+
                     # if you are still annealing min sigma then don't backprop
                     # to sigma generator
                     sigma = current_min_sigma + torch.zeros_like(mu)

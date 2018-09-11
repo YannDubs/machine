@@ -242,8 +242,10 @@ class Loss(object):
 
         if weight is None:
             weight = 1
-            if other_loss.detach() > max_proportion * self.acc_loss.detach():
-                weight = max_proportion * self.acc_loss.detach() / other_loss.detach()
+            max_loss = max_proportion * self.acc_loss.detach()
+            other_loss_detached = other_loss.detach()
+            if other_loss_detached > max_loss:
+                weight = max_loss / other_loss_detached
 
         self.acc_loss = self.acc_loss + weight * other_loss
 

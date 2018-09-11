@@ -369,9 +369,7 @@ def get_seq2seq_model(src,
                                           final_sigma=0,
                                           mode="linear")
 
-    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round),
-                                   "initial_temperature": 5,
-                                   "mode":"geometric"},
+    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round)},
                       "stochastic": {"start_step": rate_start_round},
                       None: {}}
 

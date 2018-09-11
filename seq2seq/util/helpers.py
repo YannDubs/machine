@@ -213,15 +213,16 @@ def get_indices(l, keys):
 class HyperparameterInterpolator:
     """Helper class to compute the value of a hyperparameter at each training step.
 
-    initial_value (float): initial value of the hyperparameter.
-    final_value (float): final value of the hyperparameter.
-    n_steps_interpolate (int): number of training steps before reaching the
-        `final_value`.
-    start_step (int, optional): number of steps to wait for before starting annealing.
-        During the waiting time, the hyperparameter will be `default`.
-    default (float, optional): default hyperparameter value that will be used
-        for the first `start_step`s. If `None` uses `initial_value`.
-    mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
+    Args:
+        initial_value (float): initial value of the hyperparameter.
+        final_value (float): final value of the hyperparameter.
+        n_steps_interpolate (int): number of training steps before reaching the
+            `final_value`.
+        start_step (int, optional): number of steps to wait for before starting annealing.
+            During the waiting time, the hyperparameter will be `default`.
+        default (float, optional): default hyperparameter value that will be used
+            for the first `start_step`s. If `None` uses `initial_value`.
+        mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
     """
 
     def __init__(self, initial_value, final_value, n_steps_interpolate,
@@ -279,6 +280,11 @@ class HyperparameterInterpolator:
             self.n_training_calls < (self.n_steps_interpolate + self.start_step))
 
     def __call__(self, is_update):
+        """Return the current value of the hyperparameter.
+
+        Args:
+            is_update (bool): whether to update the hyperparameter.
+        """
         if not self.is_interpolate:
             return self.final_value
 
