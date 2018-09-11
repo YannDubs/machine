@@ -70,6 +70,7 @@ def get_seq2seq_model(src,
                       is_highway=False,
                       initial_highway=0.5,
                       is_single_carry=True,
+                      is_additive_highway=False,  # TO DOC
                       is_transform_controller=False,
                       is_add_all_controller=True,
                       use_attention="pre-rnn",
@@ -327,6 +328,7 @@ def get_seq2seq_model(src,
                         is_mlps=is_mlps,
                         initial_highway=initial_highway,
                         is_single_carry=is_single_carry,
+                        is_additive_highway=is_additive_highway,
                         is_dev_mode=is_dev_mode)
 
     encoder = EncoderRNN(len(src.vocab),

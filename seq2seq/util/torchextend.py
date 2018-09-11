@@ -434,6 +434,9 @@ class ConcreteRounding(nn.Module):
         if not self.training:
             return x.round()
 
+        if self.start_step > self.n_training_calls:
+            return x
+
         temperature = self.get_temperature(is_update)
 
         x_detached = x.detach()

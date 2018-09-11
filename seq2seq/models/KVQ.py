@@ -362,6 +362,7 @@ class ValueGenerator(BaseKeyValueQuery):
                  is_mlps=True,
                  initial_highway=0.5,
                  is_single_carry=True,
+                 is_additive_highway=False,
                  **kwargs):
 
         super(ValueGenerator, self).__init__(hidden_size, **kwargs)
@@ -374,6 +375,7 @@ class ValueGenerator(BaseKeyValueQuery):
         self.is_highway = is_highway
         self.is_res = is_res
         self.is_single_carry = is_single_carry
+        self.is_additive_highway = is_additive_highway
 
         if is_mlps:
             self.generator = MLP(self.input_size,
@@ -397,7 +399,8 @@ class ValueGenerator(BaseKeyValueQuery):
         new_repr = get_extra_repr(self,
                                   conditional_shows=["is_highway",
                                                      "is_res",
-                                                     "is_single_carry"])
+                                                     "is_single_carry",
+                                                     "is_additive_highway"])
         if new_repr != "":
             parrent_repr += ", " + new_repr
 
@@ -424,7 +427,10 @@ class ValueGenerator(BaseKeyValueQuery):
         if self.is_highway:
             carry_rates = self.carrier(input_generator)
             carry_rates = self.carry_to_prob(carry_rates)
-            values = (1 - carry_rates) * values + carry_rates * embedded
+            if self.is_additive_highway:
+                values = values + carry_rates * embedded
+            else:
+                values = (1 - carry_rates) * values + carry_rates * embedded
             self._add_to_test(carry_rates, "carry_rates", additional)
 
         if self.is_res:
