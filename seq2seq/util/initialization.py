@@ -126,12 +126,12 @@ def weights_init(module):
     # bad but necessary for circular imports
     from seq2seq.util.torchextend import (MLP, AnnealedDropout, AnnealedGaussianNoise,
                                           ProbabilityConverter, StochasticRounding,
-                                          ConcreteRounding)
+                                          ConcreteRounding, L0Gates)
     from seq2seq.util.l0 import L0Dense
 
     types_reset_param = (MLP, AnnealedDropout, AnnealedGaussianNoise,
                          ProbabilityConverter, StochasticRounding, ConcreteRounding,
-                         L0Dense)
+                         L0Dense, L0Gates)
 
     if isinstance(module, types_reset_param):
         module.reset_parameters()

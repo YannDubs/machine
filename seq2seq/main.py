@@ -113,6 +113,7 @@ def get_seq2seq_model(src,
                       is_reg_round_weights=False,  # TO DOC
                       is_reg_variance_weights=False,  # TO DOC
                       is_l0_bb_weights=False,  # TO DOC
+                      l0_mode="basic",
                       lp_reg_weights=1,  # TO DOC
                       is_clamp_weights=True,  # TO DOC
                       rate_start_round=0,  # TO DOC
@@ -401,6 +402,7 @@ def get_seq2seq_model(src,
                            is_reg_round_weights=is_reg_round_weights,
                            is_reg_variance_weights=is_reg_variance_weights,
                            is_l0_bb_weights=is_l0_bb_weights,
+                           l0_mode=l0_mode,
                            is_clamp_weights=is_clamp_weights,
                            rounder_weights_kwargs=rounder_weights_kwargs,
                            rounder_mu_kwargs=rounder_mu_kwargs,
@@ -508,6 +510,7 @@ def train(train_path,
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_query=False,  # DEV MODE : TO DOC
           grad_clip_value=None,   # DEV MODE : TO DOC
+          grad_clip_norm=None,   # DEV MODE : TO DOC
           _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.
@@ -667,7 +670,8 @@ def train(train_path,
                                 loss_weight_updater=loss_weight_updater,
                                 teacher_forcing_kwargs=teacher_forcing_kwargs,
                                 initial_model=_initial_model,
-                                clip_value=grad_clip_value)
+                                clip_value=grad_clip_value,
+                                clip_norm=grad_clip_norm)
 
     if optim is None and is_amsgrad:
         optimizer_kwargs = {"amsgrad": True}

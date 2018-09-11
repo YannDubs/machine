@@ -10,7 +10,8 @@ from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
                                   clamp, format_source_lengths, Rate2Steps,
                                   get_indices, Clamper, regularization_loss)
 from seq2seq.util.torchextend import (MLP, StochasticRounding, ConcreteRounding,
-                                      ProbabilityConverter, AnnealedGaussianNoise)
+                                      ProbabilityConverter, AnnealedGaussianNoise,
+                                      L0Gates)
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
 from seq2seq.util.l0 import L0Dense
 
@@ -226,6 +227,7 @@ class PositionAttention(nn.Module):
                  is_reg_round_weights=False,  # TO DOC
                  is_reg_variance_weights=False,  # TO DOC
                  is_l0_bb_weights=False,  # TO DOC
+                 l0_mode="basic",  # TO DOC / CHOSE BEST
                  lp_reg_weights=1,
                  is_clamp_weights=True,  # TO DOC
                  rounder_weights_kwargs={},  # TO DOC
@@ -236,10 +238,11 @@ class PositionAttention(nn.Module):
                  is_clamp_mu=True,
                  is_relative_sigma=True,
                  is_force_sigma=False,  # TO DOC
-                 # with min_sigma=0.5 the max attention you can have is 0.9647
-                 min_sigma=0.5,
+                 # with min_sigma=0.41 the max attention you can have is 0.9073 (and it's prime ;)
+                 min_sigma=0.41,
                  # intial_sigma=5 chosen so that high sigma but up to length 50
                  # can still  have different attention => can learn
+                 # (min when len = 50 : 1.2548e-21)
                  initial_sigma=5.0,
                  n_steps_interpolate_min_sigma=0,
                  is_dev_mode=False):
@@ -348,11 +351,17 @@ class PositionAttention(nn.Module):
         self.rounder_mu = _get_rounder(**rounder_mu_kwargs)
 
         if self.is_building_blocks_mu and self.is_l0_bb_weights:
-            self.linear_l0_weights = L0Dense(n_building_blocks_mu, 1,
-                                             is_give_weights=True,
-                                             bias=False,
-                                             weight_decay=0.,
-                                             lamba=1.)
+            self.l0_mode = l0_mode
+            if self.l0_mode == "basic":
+                self.linear_l0_weights = L0Dense(n_building_blocks_mu, 1,
+                                                 is_give_weights=True,
+                                                 bias=False,
+                                                 weight_decay=0.,
+                                                 lamba=1.)
+            elif self.l0_mode == "rounding":
+                self.linear_l0_weights = L0Gates(hidden_size, n_building_blocks_mu)
+            else:
+                raise ValueError("Unkown `l0_mode = {}`".format(l0_mode))
 
         # inital sigma will not be 0 so have to change that value : I use the
         # expectation of the initialization of sigma0 although what we really
@@ -687,12 +696,21 @@ class PositionAttention(nn.Module):
                                    additional)
 
             if self.is_l0_bb_weights:
-                # same as bm in the else statement but samples which parameters
-                # can use first
-                self.linear_l0_weights.set_weights(mu_weights.unsqueeze(2))
-                mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
-                additional["losses"
-                           ]["l0_weights"] = self.linear_l0_weights.regularization()
+                if self.l0_mode == "basic":
+                    # same as bm in the else statement but samples which parameters
+                    # can use first
+                    self.linear_l0_weights.set_weights(mu_weights.unsqueeze(2))
+                    mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
+                    additional["losses"
+                               ]["l0_weights"] = self.linear_l0_weights.regularization()
+
+                elif self.l0_mode == "rounding":
+                    # THIS SHOULD BE BEFORE ALL OTHER REGULARIZATION!!!
+                    gates, loss = self.linear_l0_weights(positioning_outputs)
+                    additional["losses"]["l0_weights"] = loss
+                    mu = torch.bmm((mu_weights * gates).unsqueeze(1),
+                                   building_blocks.unsqueeze(2))
+                    self._add_to_test(gates, "bb_gates", additional)
             else:
                 # (batch, 1, 5) * (batch, 5, 1) -> (batch, 1, 1)
                 mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
@@ -722,8 +740,6 @@ class PositionAttention(nn.Module):
                 # KEEPING FOR TESTING OLD STYLE !!!!!!!!!!!!
                 sigma = self.sigma_generator(positioning_outputs)
                 sigma = self.min_sigma + sigma.unsqueeze(1)
-                if additional["training_step"] % 200 == 0:
-                    print(sigma.mean(), self.get_sigma(False))
                 sigma = torch.max(sigma,
                                   torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
 

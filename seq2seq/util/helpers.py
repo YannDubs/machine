@@ -107,6 +107,10 @@ def renormalize_input_length(x, input_lengths, max_len=1):
 def get_extra_repr(module, always_shows=[], conditional_shows=dict()):
     """Gets the `extra_repr` for a module.
 
+    Note:
+        All variables that you want to show have to be attributes of `module` with
+        the same name.The name of the param in the function definition is not enough.
+
     Args:
         module (nn.Module): Module for which to get `extra_repr`.
         always_show (list of str): list of variables to always show.

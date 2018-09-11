@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 
-from seq2seq.util.initialization import linear_init
+from seq2seq.util.initialization import linear_init, weights_init
 from seq2seq.util.helpers import (get_extra_repr, identity, clamp, Clamper,
                                   HyperparameterInterpolator)
 
@@ -390,7 +390,8 @@ class ConcreteRounding(nn.Module):
         min_p (float, optional): minimum probability of rounding to the "wrong"
             number. Useful to keep exploring.
         initial_temperature (float, optional): initial softmax temperature.
-        final_temperature (float, optional): final softmax temperature.
+        final_temperature (float, optional): final softmax temperature. Default:
+            `2/3 if n_steps_interpolate==0 else 0.5`.
         n_steps_interpolate (int, optional): number of training steps before
             reaching the `final_temperature`.
         mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
@@ -400,11 +401,14 @@ class ConcreteRounding(nn.Module):
     def __init__(self,
                  min_p=0.01,
                  initial_temperature=1,
-                 final_temperature=0.5,
+                 final_temperature=None,
                  n_steps_interpolate=0,
                  mode="linear",
                  **kwargs):
         super().__init__()
+
+        if final_temperature is None:
+            final_temperature = 2 / 3 if n_steps_interpolate == 0 else 0.5
 
         self.min_p = min_p
         self.get_temperature = HyperparameterInterpolator(initial_temperature,
@@ -440,3 +444,58 @@ class ConcreteRounding(nn.Module):
         new_decimals = new_d_detached.round() - new_d_detached + soft_sample
         x_rounded = x_floored + new_decimals - x_detached + x
         return x_rounded
+
+
+class L0Gates(nn.Module):
+    """Return gates for L0 regularization.
+
+    Notes:
+        Main idea taken from `Learning Sparse Neural Networks through L_0
+        Regularization`, but modified using straight through Gumbel
+        softmax estimator.
+
+    Args:
+        input_size (int): size of the input to the gate generator.
+        output_size (int): length of the vectors to dot product.
+        bias (bool, optional): whether to use a bias for the gate generation.
+        is_mlp (bool, optional): whether to use a MLP for the gate generation.
+        kwargs:
+            Additional arguments to the gate generator.
+    """
+
+    def __init__(self,
+                 input_size, output_size,
+                 is_mlp=False,
+                 **kwargs):
+        super().__init__()
+
+        self.input_size = input_size
+        self.output_size = output_size
+        self.is_mlp = is_mlp
+        if self.is_mlp:
+            self.gate_generator = MLP(self.input_size, self.output_size, self.output_size,
+                                      **kwargs)
+        else:
+            self.gate_generator = nn.Linear(self.input_size, self.output_size,
+                                            **kwargs)
+
+        self.rounder = ConcreteRounding()
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        linear_init(self.gate_generator, "sigmoid")
+
+    def extra_repr(self):
+        return get_extra_repr(self,
+                              always_shows=["input_size", "output_size"],
+                              conditional_shows=["is_mlp"])
+
+    def forward(self, x):
+        gates = self.gate_generator(x)
+        gates = torch.sigmoid(gates)
+        gates = self.rounder(gates)
+
+        loss = gates.mean()
+
+        return gates, loss
