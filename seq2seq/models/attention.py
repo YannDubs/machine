@@ -131,9 +131,7 @@ class ContentAttention(nn.Module):
         self._add_to_test([logits, approx_max_logit],
                           ["logits", "approx_max_logit"],
                           additional)
-        self._add_to_visualize(approx_max_logit,
-                               ["approx_max_logit"],
-                               additional)
+        #self._add_to_visualize(approx_max_logit, ["approx_max_logit"], additional)
 
         # SHOULD TRY THIS AT SOME POINT
         # indeed max < logsumexp < max + log(n)

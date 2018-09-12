@@ -113,7 +113,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     n_steps_interpolate = rate2steps(0)
     start_step = rate2steps(0)
     max_p_interpolators["pos_perc"
-                        ] = HyperparameterInterpolator(1e-2, 1e-2, n_steps_interpolate,
+                        ] = HyperparameterInterpolator(5e-2, 5e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
@@ -760,11 +760,13 @@ class PositionAttention(nn.Module):
                     # to sigma generator
                     sigma = current_min_sigma + torch.zeros_like(mu)
                 else:
-                    sigma = F.leaky_relu(self.min_sigma + self.sigma_generator(positioning_outputs))
+                    sigma = F.leaky_relu((self.min_sigma +
+                                          self.sigma_generator(positioning_outputs)),
+                                         negative_slope=0.1)
                     sigma = self.min_sigma + sigma.unsqueeze(1)
                     # because using leaky relu still has to add a hard limit to be sure that
-                    # never division by 0
-                    sigma = torch.max(sigma, torch.zeros_like(sigma) + self.min_sigma / 2)
+                    # never division by 0. Max mu will be 0.9975
+                    sigma = torch.max(sigma, torch.zeros_like(sigma) + self.min_sigma / 1.5)
 
         if self.is_relative_sigma:
             sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)

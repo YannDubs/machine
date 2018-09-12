@@ -110,7 +110,7 @@ class ProbabilityConverter(nn.Module):
     """
 
     def __init__(self,
-                 min_p=0.01,
+                 min_p=0.001,
                  activation="sigmoid",
                  is_temperature=False,
                  is_bias=False,
@@ -345,7 +345,7 @@ class StochasticRounding(nn.Module):
         start_step (int, optional): number of steps to wait for before starting rounding.
     """
 
-    def __init__(self, min_p=0.01, start_step=0):
+    def __init__(self, min_p=0.001, start_step=0):
         super().__init__()
         self.min_p = min_p
         self.start_step = start_step
@@ -401,7 +401,7 @@ class ConcreteRounding(nn.Module):
 
     def __init__(self,
                  start_step=0,
-                 min_p=0.01,
+                 min_p=0.001,
                  initial_temperature=1,
                  final_temperature=None,
                  n_steps_interpolate=0,
