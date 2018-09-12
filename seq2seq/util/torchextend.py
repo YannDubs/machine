@@ -473,6 +473,8 @@ class L0Gates(nn.Module):
     Args:
         input_size (int): size of the input to the gate generator.
         output_size (int): length of the vectors to dot product.
+        is_at_least_1 (bool, optional): only start regularizing if more than one
+            gate is 1.
         bias (bool, optional): whether to use a bias for the gate generation.
         is_mlp (bool, optional): whether to use a MLP for the gate generation.
         kwargs:
@@ -481,12 +483,14 @@ class L0Gates(nn.Module):
 
     def __init__(self,
                  input_size, output_size,
+                 is_at_least_1=False,
                  is_mlp=False,
                  **kwargs):
         super().__init__()
 
         self.input_size = input_size
         self.output_size = output_size
+        self.is_at_least_1 = is_at_least_1
         self.is_mlp = is_mlp
         if self.is_mlp:
             self.gate_generator = MLP(self.input_size, self.output_size, self.output_size,
@@ -505,7 +509,7 @@ class L0Gates(nn.Module):
     def extra_repr(self):
         return get_extra_repr(self,
                               always_shows=["input_size", "output_size"],
-                              conditional_shows=["is_mlp"])
+                              conditional_shows=["is_mlp", "is_at_least_1"])
 
     def forward(self, x):
         gates = self.gate_generator(x)
@@ -513,5 +517,7 @@ class L0Gates(nn.Module):
         gates = self.rounder(gates)
 
         loss = gates.mean()
+        if self.is_at_least_1:
+            loss = torch.relu(loss - 1. / gates.size(-1))
 
         return gates, loss

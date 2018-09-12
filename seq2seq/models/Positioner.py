@@ -359,7 +359,8 @@ class PositionAttention(nn.Module):
                                                  weight_decay=0.,
                                                  lamba=1.)
             elif self.l0_mode == "rounding":
-                self.linear_l0_weights = L0Gates(hidden_size, n_building_blocks_mu)
+                self.linear_l0_weights = L0Gates(hidden_size, n_building_blocks_mu,
+                                                 is_at_least_1=True)
             else:
                 raise ValueError("Unkown `l0_mode = {}`".format(l0_mode))
 
