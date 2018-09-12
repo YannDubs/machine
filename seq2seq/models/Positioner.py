@@ -584,6 +584,11 @@ class PositionAttention(nn.Module):
                              if l in self.bb_labels]
 
             # REGULARIZATION
+            if self.is_l0_bb_weights and self.l0_mode == "rounding":
+                gates, loss = self.linear_l0_weights(positioning_outputs)
+                additional["losses"]["l0_weights"] = loss
+                self._add_to_test(gates, "bb_gates", additional)
+
             if self.is_reg_round_weights:
                 # used to round mu weight without forcing
                 additional["losses"
@@ -706,12 +711,8 @@ class PositionAttention(nn.Module):
                                ]["l0_weights"] = self.linear_l0_weights.regularization()
 
                 elif self.l0_mode == "rounding":
-                    # THIS SHOULD BE BEFORE ALL OTHER REGULARIZATION!!!
-                    gates, loss = self.linear_l0_weights(positioning_outputs)
-                    additional["losses"]["l0_weights"] = loss
                     mu = torch.bmm((mu_weights * gates).unsqueeze(1),
                                    building_blocks.unsqueeze(2))
-                    self._add_to_test(gates, "bb_gates", additional)
             else:
                 # (batch, 1, 5) * (batch, 5, 1) -> (batch, 1, 1)
                 mu = torch.bmm(mu_weights.unsqueeze(1), building_blocks.unsqueeze(2))
