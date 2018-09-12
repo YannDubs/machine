@@ -918,7 +918,7 @@ class AttentionMixer(nn.Module):
             if self.rounder_perc is not None:
                 position_perc = self.rounder_perc(position_perc)
         else:
-            position_perc = torch.tensor(0.5).expand(batch_size, 1)
+            position_perc = torch.tensor(0.5).to(device).expand(batch_size, 1)
 
             self._add_to_test(position_perc, "position_percentage", additional)
 
