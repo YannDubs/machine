@@ -94,6 +94,7 @@ class EncoderRNN(BaseRNN):
         self.is_value = is_value
         self.is_decoupled_kv = is_decoupled_kv
         self.is_dev_mode = is_dev_mode
+        self.is_viz_train = is_viz_train
 
         # # # keeping for testing # # #
         self.is_highway = is_highway
@@ -193,11 +194,7 @@ class EncoderRNN(BaseRNN):
         input_lengths_list, input_lengths_tensor = format_source_lengths(
             input_lengths)
 
-        if additional is None:
-            additional = dict()
-
-        if self.is_dev_mode:
-            additional["test"] = additional.get("test", dict())
+        additional = self._initialize_additional(additional)
 
         batch_size = input_var.size(0)
         hidden = replicate_hidden0(self.hidden0, batch_size)
@@ -261,3 +258,15 @@ class EncoderRNN(BaseRNN):
         additional["last_enc_controller_out"] = output[:, -1:, :]
 
         return (keys, values), hidden, additional
+
+    def _initialize_additional(self, additional):
+        if additional is None:
+            additional = dict()
+
+        if self.is_dev_mode:
+            additional["test"] = additional.get("test", dict())
+
+        if self.is_viz_train:
+            additional["visualize"] = additional.get("visualize", dict())
+
+        return additional

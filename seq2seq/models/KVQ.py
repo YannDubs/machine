@@ -116,6 +116,22 @@ class BaseKeyValueQuery(nn.Module):
             else:
                 additional["test"][keys] = values
 
+    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
+        """Every `save_every` batch, adds a certain variable to the `visualization`
+        sub-dictionary of additional. Such variables should be the ones that are
+        interpretable, and for which the size is independant of the source length.
+        I.e avaregae over the source length if it is dependant.
+        """
+        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_visualize(v, k, additional)
+            else:
+                # averages over the batch size
+                if isinstance(values, torch.Tensor):
+                    values = values.mean(0).cpu()
+                additional["visualize"][keys] = values
+
 
 class BaseKeyQuery(BaseKeyValueQuery):
     """Base class for quey query generators.
@@ -432,6 +448,7 @@ class ValueGenerator(BaseKeyValueQuery):
             else:
                 values = (1 - carry_rates) * values + carry_rates * embedded
             self._add_to_test(carry_rates, "carry_rates", additional)
+            self._add_to_visualize(carry_rates.mean(-1).mean(-1), "carry_rates", additional)
 
         if self.is_res:
             values += embedded

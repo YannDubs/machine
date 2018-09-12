@@ -244,7 +244,11 @@ class SupervisedTrainer(object):
                         # computes rolling mean
                         sum_previous_values = (other_single_epoch["visualize"].get(k, 0) *
                                                i_visualized)
-                        other_single_epoch["visualize"][k] = (sum_previous_values + mean(v)
+                        try:
+                            scalar_v = mean(v)
+                        except TypeError:
+                            scalar_v = v
+                        other_single_epoch["visualize"][k] = (sum_previous_values + scalar_v
                                                               ) / (i_visualized + 1)
                     i_visualized += 1
                 # # # # # # # # # # #
