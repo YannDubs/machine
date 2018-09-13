@@ -144,10 +144,11 @@ class SupervisedTrainer(object):
             self.clipper(model.parameters())
 
         self.optimizer.step()
-        model.zero_grad()
 
         for _, confuser in confusers.items():
             confuser.step_discriminator()
+
+        model.zero_grad()
 
         return losses, other
 

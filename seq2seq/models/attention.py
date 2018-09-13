@@ -71,7 +71,9 @@ class ContentAttention(nn.Module):
                                                      initial_temperature=0.1,
                                                      temperature_transformer=Clamper(minimum=0.05,
                                                                                      maximum=10,
-                                                                                     is_leaky=True))
+                                                                                     is_leaky=True,
+                                                                                     hard_min=0.01
+                                                                                     ))
 
         self.reset_parameters()
 

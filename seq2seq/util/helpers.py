@@ -15,21 +15,48 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class Clamper:
     """Clamp wrapper class. To bypass the lambda pickling issue."""
 
-    def __init__(self, minimum=0, maximum=1., is_leaky=False, negative_slope=0.01):
+    def __init__(self,
+                 minimum=-float("Inf"),
+                 maximum=float("Inf"),
+                 is_leaky=False,
+                 negative_slope=0.01,
+                 hard_min=None,
+                 hard_max=None):
         self.minimum = minimum
         self.maximum = maximum
         self.is_leaky = is_leaky
         self.negative_slope = negative_slope
+        self.hard_min = hard_min
+        self.hard_max = hard_max
 
     def __call__(self, x):
-        return clamp(x, self.minimum, self.maximum, self.is_leaky, self.negative_slope)
+        return clamp(x, minimum=self.minimum, maximum=self.maximum,
+                     is_leaky=self.is_leaky, negative_slope=self.negative_slope,
+                     hard_min=self.hard_min, hard_max=self.hard_max)
 
 
-def clamp(x, minimum=0., maximum=1., is_leaky=False, negative_slope=0.01):
-    """Clamps a tensor to the given [minimum, maximum] (leaky) bound."""
+def clamp(x,
+          minimum=-float("Inf"),
+          maximum=float("Inf"),
+          is_leaky=False,
+          negative_slope=0.01,
+          hard_min=None,
+          hard_max=None):
+    """Clamps a tensor to the given [minimum, maximum] (leaky) bound, with
+    an optional hard clamping.
+    """
     lower_bound = (minimum + negative_slope * x) if is_leaky else torch.zeros_like(x) + minimum
     upper_bound = (maximum + negative_slope * x) if is_leaky else torch.zeros_like(x) + maximum
-    return torch.max(lower_bound, torch.min(x, upper_bound))
+    clamped = torch.max(lower_bound, torch.min(x, upper_bound))
+
+    if hard_min is not None or hard_max is not None:
+        if hard_min is None:
+            hard_min = -float("Inf")
+        elif hard_max is None:
+            hard_max = float("Inf")
+        clamped = clamp(x, minimum=hard_min, maximum=hard_max, is_leaky=False)
+
+    return clamped
 
 
 def identity(x):
@@ -99,9 +126,15 @@ def renormalize_input_length(x, input_lengths, max_len=1):
     else:
         if not isinstance(input_lengths, torch.Tensor):
             input_lengths = torch.FloatTensor(input_lengths).to(device)
-        while input_lengths.dim() < x.dim():
-            input_lengths = input_lengths.unsqueeze(-1)
+        input_lengths = atleast_nd(input_lengths, x.dim())
         return (x * max_len) / input_lengths
+
+
+def atleast_nd(x, n):
+    """Adds dimensions to x until reaches n."""
+    while x.dim() < n:
+        x = x.unsqueeze(-1)
+    return x
 
 
 def get_extra_repr(module, always_shows=[], conditional_shows=dict()):
@@ -397,3 +430,15 @@ def abs_clamp(x, lower_bound):
     lower_bounded = torch.max(x * sign, torch.ones_like(x) * lower_bound
                               ) * sign
     return lower_bounded
+
+
+def modify_optimizer_grads(optimizer, is_neg=True, mul=None):
+    """Modifies in place the gradient of the parameetrs of the `optimizer`."""
+    for group in optimizer.param_groups:
+        for p in group['params']:
+            if p.grad is not None:
+                p.grad.detach_()
+                if is_neg:
+                    p.grad.neg_()
+                if mul is not None:
+                    p.grad.mul_(mul)

@@ -199,9 +199,9 @@ class DecoderRNN(BaseRNN):
             if self.is_content_attn and self.is_position_attn:
                 n_additional_controller_features += 1  # position_perc_old
 
-        self.rel_counter = torch.arange(0, self.max_len
-                                        ).type(torch.FloatTensor
-                                               ).unsqueeze(1).to(device) / (self.max_len - 1)
+        self.rel_counter = torch.arange(0, self.max_len,
+                                        dtype=torch.float,
+                                        device=device).unsqueeze(1) / (self.max_len - 1)
 
         self.embedding = nn.Embedding(self.output_size, self.embedding_size)
         self.noise_input = AnnealedGaussianNoise(**embedding_noise_kwargs)
@@ -374,18 +374,25 @@ class DecoderRNN(BaseRNN):
                 eos_batches = eos_batches.cpu().view(-1).numpy()
                 update_idx = ((lengths > step) & eos_batches) != 0
                 lengths[update_idx] = len(sequence_symbols)
+
+                """
+                if "query_confuser" in confusers:
+                    # VERY SLOW FOR CUDA !!
+                    additional["length_dec"] = torch.from_numpy(lengths).to(device)
+                """
+
             return symbols
 
         ret_dict = dict()
         if self.use_attention:
             ret_dict[DecoderRNN.KEY_ATTN_SCORE] = list()
 
-        store_additional(additional, ret_dict, additional_to_store)
-        additional = self._initialize_additional(additional)
-
         inputs, batch_size, max_length = self._validate_args(inputs, encoder_hidden,
                                                              encoder_outputs, function,
                                                              teacher_forcing_ratio)
+
+        store_additional(additional, ret_dict, additional_to_store)
+        additional = self._initialize_additional(additional)
 
         decoder_hidden = self._init_state(encoder_hidden)
 
@@ -641,10 +648,31 @@ class DecoderRNN(BaseRNN):
             query = controller_output
 
         if "query_confuser" in confusers:
-            counting_target_j = torch.arange(self.max_len)[step:step + query.size(1)
-                                                           ].view(1, -1, 1
-                                                                  ).expand(batch_size, -1, 1)
-            confusers["query_confuser"].compute_loss(query, counting_target_j)
+            raise ValueError("Please use key_confuser for now.")
+            """
+            counting_target_j = torch.arange(self.max_len,
+                                             dtype=torch.float,
+                                             device=device
+                                             )[step:step + query.size(1)
+                                               ].view(1, -1, 1).expand(batch_size, -1, 1)
+
+            # masks everything which finished decoding
+            mask = atleast_nd(additional["length_dec"] < step + 1,
+                              counting_target_j.dim())
+
+            n_calls = additional["length_dec"].float()
+            # it probably can get the total number of words N, which means
+            # that if it had no idea it would predict the mean N/2
+            # in the bet case it should thus have an expected loss
+            # E[Loss] = E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
+            max_losses = ((n_calls-1) / 2)**2
+
+            confusers["query_confuser"].compute_loss(query,
+                                                     targets=counting_target_j,
+                                                     n_calls=n_calls,
+                                                     max_losses=None,
+                                                     mask=mask)
+            """
 
         unormalized_counter = self.rel_counter.expand(batch_size, -1, 1)
         rel_counter_encoder = renormalize_input_length(unormalized_counter,

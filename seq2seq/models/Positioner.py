@@ -17,9 +17,6 @@ from seq2seq.util.l0 import L0Dense
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-IS_X05 = True
-IS_SIGMA0_MINSIGMA = True
-
 
 def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     """Return the interpolators of the regularizers of the positioner.
@@ -292,9 +289,9 @@ class PositionAttention(nn.Module):
         self.is_building_blocks_mu = is_building_blocks_mu
         self.is_bb_bias = is_bb_bias
         self.single_step = torch.tensor(1 / (self.max_len - 1)).to(device)
-        self.rel_counter = torch.arange(0, self.max_len
-                                        ).type(torch.FloatTensor
-                                               ).unsqueeze(1).to(device) / (self.max_len - 1)
+        self.rel_counter = torch.arange(0, self.max_len,
+                                        dtype=torch.float,
+                                        device=device).unsqueeze(1) / (self.max_len - 1)
 
         self.bb_labels = ["mean_attn_old",
                           "rel_counter_decoder",
@@ -371,15 +368,19 @@ class PositionAttention(nn.Module):
 
         # low initial temperature because min_sigma will change during
         # training and doesn't want vanishing gradients when it reaches small min_sigma
-        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
+        # initialize the converter giving the middle between both bounds (such that
+        # never vanishing grad)
+        sigma0 = (self.initial_sigma + self.min_sigma) / 2
         self.sigma_to_conf = ProbabilityConverter(is_temperature=True,
                                                   is_bias=True,
-                                                  initial_x=-1 * sigma0 / 2,
+                                                  initial_x=-1 * sigma0,
                                                   bias_transformer=F.leaky_relu,
                                                   initial_temperature=0.5,
                                                   temperature_transformer=Clamper(minimum=0.5,
                                                                                   maximum=10,
-                                                                                  is_leaky=True))
+                                                                                  is_leaky=True,
+                                                                                  hard_min=0.01
+                                                                                  ))
 
         self.mu0 = Parameter(torch.tensor(0.0))
         self.sigma0 = Parameter(torch.tensor(sigma0))
@@ -394,12 +395,10 @@ class PositionAttention(nn.Module):
         """Reset and initialize the module parameters."""
         self.apply(weights_init)
 
-        if IS_X05:
-            self.mu0 = Parameter(torch.tensor(0.5))
-        else:
-            init_param(self.mu0, is_positive=True)
+        # could start at 0 if want to bias to start reading from the begining
+        self.mu0 = Parameter(torch.tensor(0.5))
 
-        sigma0 = self.initial_sigma if IS_SIGMA0_MINSIGMA else 2.0
+        sigma0 = (self.initial_sigma + self.min_sigma) / 2
         self.sigma0 = Parameter(torch.tensor(sigma0))
 
         init_param(self.mean_attn_olds_factor, is_positive=True)

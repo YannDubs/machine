@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
+from torch.nn.utils.rnn import pad_sequence
 
 from .baseRNN import BaseRNN
 
@@ -119,6 +120,10 @@ class EncoderRNN(BaseRNN):
         else:
             self.key_size = self.bidirectional_hidden_size
 
+        self.enc_counter = torch.arange(1, self.max_len + 1,
+                                        dtype=torch.float,
+                                        device=device)
+
         if self.is_value:
             self.value_generator = ValueGenerator(self.bidirectional_hidden_size,
                                                   embedding_size,
@@ -174,7 +179,7 @@ class EncoderRNN(BaseRNN):
                                                  "is_value",
                                                  "is_decoupled_kv"])
 
-    def forward(self, input_var, input_lengths=None, additional=None):
+    def forward(self, input_var, input_lengths=None, additional=None, confusers=dict()):
         """
         Applies a multi-layer KV-RNN to an input sequence.
 
@@ -191,12 +196,13 @@ class EncoderRNN(BaseRNN):
             - **hidden** (num_layers * num_directions, batch, hidden_size):
                 variable containing the features in the hidden state h
         """
-        input_lengths_list, input_lengths_tensor = format_source_lengths(
-            input_lengths)
+        input_lengths_list, input_lengths_tensor = format_source_lengths(input_lengths)
 
         additional = self._initialize_additional(additional)
 
         batch_size = input_var.size(0)
+        max_input_len = input_var.size(1)
+
         hidden = replicate_hidden0(self.hidden0, batch_size)
 
         embedded = self.embedding(input_var)
@@ -219,6 +225,29 @@ class EncoderRNN(BaseRNN):
                 output, input_lengths_tensor, additional)
         else:
             keys = output
+
+        if "key_confuser" in confusers:
+            counting_target_i = self.enc_counter.expand(batch_size, -1)[:, :max_input_len]
+
+            # masks everything which finished decoding
+            mask = counting_target_i > input_lengths_tensor.unsqueeze(1)
+
+            # it probably can get the total number of words N, which means
+            # that if it had no idea it would predict the mean N/2
+            # in the bet case it should thus have an expected loss
+            # E[Loss] = E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
+            max_losses = (input_lengths_tensor**2 - 1) / 12
+
+            # I just divide by 2 saying that. if you are at half of the best possible
+            # it's already good. This is important to decrease unnecessary noise
+            # that could hinder learning
+            max_losses = max_losses / 2
+
+            confusers["key_confuser"].compute_loss(keys,
+                                                   targets=counting_target_i.unsqueeze(-1),
+                                                   n_calls=input_lengths_tensor,
+                                                   max_losses=max_losses,
+                                                   mask=mask)
 
         if self.is_value:
             values, additional = self.value_generator(

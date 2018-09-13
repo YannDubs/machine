@@ -510,7 +510,7 @@ def train(train_path,
           is_amsgrad=False,
           rate_prepare_pos=None,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
-          is_confuse_query=False,  # DEV MODE : TO DOC
+          is_confuse_key=False,  # DEV MODE : TO DOC
           grad_clip_value=None,   # DEV MODE : TO DOC
           grad_clip_norm=None,   # DEV MODE : TO DOC
           _initial_model="initial_model",
@@ -580,8 +580,8 @@ def train(train_path,
             and you don't want to start a probability at 0 but 0.5.
         is_amsgrad (bool, optional): Whether to use amsgrad, which is supposed
             to make Adam more stable : "On the Convergence of Adam and Beyond".
-        is_confuse_query (bool, optional): whether to remove the ability of the
-            query to know what decoding step it is at. By doing so the network is
+        is_confuse_key (bool, optional): whether to remove the ability of the
+            key to know what encoding step it is at. By doing so the network is
             forced to used the positional attention when counting is crucial.
         kwargs:
             Additional arguments to `get_seq2seq_model`.
@@ -688,11 +688,11 @@ def train(train_path,
                                              hidden_size=None,
                                              bias=False,
                                              default_targets=torch.tensor(max_len).float())
-    if is_confuse_query:
-        confusers["query_confuser"] = Confuser(nn.MSELoss(),
-                                               seq2seq.decoder.query_size,
-                                               1,
-                                               scaler=0.05)
+    if is_confuse_key:
+        confusers["key_confuser"] = Confuser(nn.MSELoss(reduction="none"),
+                                             seq2seq.encoder.key_size,
+                                             1,
+                                             max_scale=5)
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,

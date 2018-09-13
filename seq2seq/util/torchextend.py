@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 
-from seq2seq.util.initialization import linear_init, weights_init
+from seq2seq.util.initialization import linear_init
 from seq2seq.util.helpers import (get_extra_repr, identity, clamp, Clamper,
                                   HyperparameterInterpolator)
 
@@ -119,7 +119,8 @@ class ProbabilityConverter(nn.Module):
                  initial_x=0,
                  bias_transformer=identity,
                  # TO DOC + say that _probability_to_bias doesn't take into accoiuntr transform => needs to be boundary case transform
-                 temperature_transformer=Clamper(minimum=0.1, maximum=10., is_leaky=True)):
+                 temperature_transformer=Clamper(minimum=0.1, maximum=10., is_leaky=True,
+                                                 hard_min=0.01)):
         super(ProbabilityConverter, self).__init__()
         self.min_p = min_p
         self.activation = activation
@@ -135,14 +136,14 @@ class ProbabilityConverter(nn.Module):
 
     def reset_parameters(self):
         if self.is_temperature:
-            self.temperature = Parameter(torch.tensor(self.initial_temperature))
+            self.temperature = Parameter(torch.tensor(self.initial_temperature)).to(device)
         else:
             self.temperature = torch.tensor(self.initial_temperature).to(device)
 
         initial_bias = self._probability_to_bias(self.initial_probability,
                                                  initial_x=self.initial_x)
         if self.is_bias:
-            self.bias = Parameter(torch.tensor(initial_bias))
+            self.bias = Parameter(torch.tensor(initial_bias)).to(device)
         else:
             self.bias = torch.tensor(initial_bias).to(device)
 
@@ -159,8 +160,9 @@ class ProbabilityConverter(nn.Module):
 
         elif self.activation == "leaky-hard-sigmoid":
             x = 0.2 * ((x + bias) * temperature) + 0.5
-            full_p = clamp(x, minimum=0., maximum=1.,
-                           is_leaky=True, negative_slope=0.01)
+            full_p = clamp(x, minimum=0.1, maximum=.9,
+                           is_leaky=True, negative_slope=0.01,
+                           hard_min=0, hard_max=0)
         else:
             raise ValueError("Unkown activation : {}".format(self.activation))
 

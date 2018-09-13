@@ -99,7 +99,8 @@ class Seq2seq(nn.Module):
         additional = {"epoch": self.epoch, "training_step": self.training_step}
         encoder_outputs, encoder_hidden, additional = self.encoder(input_variable,
                                                                    input_lengths,
-                                                                   additional=additional)
+                                                                   additional=additional,
+                                                                   confusers=confusers)
 
         self.is_update_mid_dropout = self.training
         self.is_update_mid_noise = self.training
