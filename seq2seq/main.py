@@ -693,7 +693,7 @@ def train(train_path,
         confusers["key_confuser"] = Confuser(nn.MSELoss(reduction="none"),
                                              seq2seq.encoder.key_size,
                                              1,
-                                             max_scale=5)
+                                             n_steps_discriminate_only=rate2steps(0.01))
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,

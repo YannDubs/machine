@@ -27,13 +27,16 @@ class Confuser(object):
         max_scale (float, optional): maximum percentage of the total loss that
             the confuser loss can reach. Note that this only limits the gradients
             for the model not the discrimator.
+        n_steps_discriminate_only (int, optional): Number of steps at the begining
+            where you only train the discriminator.
     """
 
     def __init__(self, criterion, input_size, target_size,
                  hidden_size=32,
                  bias=True,
                  default_targets=None,
-                 max_scale=0.05):
+                 max_scale=0.05,
+                 n_steps_discriminate_only=0):
         self.criterion = criterion
         if default_targets is not None:
             self.default_targets = default_targets
@@ -46,10 +49,9 @@ class Confuser(object):
         self.optimizer = torch.optim.Adam(self.model.parameters())
 
         self.max_scale = max_scale
-        self.first_batch_call = True
-        self.to_backprop_model = None
-        self.batch_args = dict(n_calls=None, max_losses=None)
+        self.n_steps_discriminate_only = n_steps_discriminate_only
 
+        self.to_backprop_model = None
         self.n_training_calls = 0
 
         self.reset_parameters()
@@ -66,43 +68,40 @@ class Confuser(object):
 
     def _prepare_for_new_batch(self):
         self.losses = torch.tensor(0., requires_grad=True).float()
-        self.first_batch_call = True
         self.to_backprop_model = None
-        self.batch_args = dict(n_calls=None, max_losses=None)
 
-    def _end_batch_computations(self):
-
-        if self.batch_args["n_calls"] is not None:
-            self.losses = self.losses / self.batch_args["n_calls"]
-
-        if self.batch_args["max_losses"] is not None:
-            # only backprop model if loss < max_loss
-            self.to_backprop_model = self.losses < self.batch_args["max_losses"]
-
-    def compute_loss(self, inputs, targets=None, n_calls=None, max_losses=None, mask=None):
+    def compute_loss(self, inputs,
+                     targets=None,
+                     seq_len=None,
+                     max_losses=None,
+                     mask=None,
+                     is_multi_call=False):
         """Computes the loss for the confuser.
 
         inputs (torch.tensor): inputs to the confuser. I.e where you want to remove
             the `targets` from.
         targets (torch.tensor, optional): targets of the confuser. I.e what you want to remove
             from the `inputs`. If `None` will use `default_targets`.
-        n_calls (int or torch.tensor, optional): number of calls per batch.
-            This is used so that the loss is an average and not a sum of losses.
-            I.e to make it independant of the number of calls. If the number is
-            not the same accross the batch, you can use a `torch.tensor` of length
-            `batch_size`. You only have to give it for the last batch call.
+        seq_len (int or torch.tensor, optional): number of calls per batch / sequence
+            length. This is used so that the loss is an average, not a sum of losses.
+            I.e to make it independant of the number of calls. The shape of must
+            be broadcastable with the shape of the output of the criterion.
         max_losses (float or torch.tensor, optional): max losses. This is used so
             that you don't add unnessessary noise when the model is "confused" enough.
             The current losses will be clamped in a leaky manner, then hard manner
-            if reaches `max_losses*2`. If the number is not the same accross the
-            batch, you can use a `torch.tensor` of length `batch_size`. You only
-            have to give it for the last batch call.
+            if reaches `max_losses*2`. The shape of  max_losses must be broadcastable
+            with the shape of the output of the criterion.
         mask (torch.tensor, optional): mask to apply to the output of the criterion.
-            The shape of mask must be broadcastable with the shape of the output
-            of the criterion.
+            Should be used to mask when varying sequence lengths. The shape of mask
+            must be broadcastable with the shape of the output of the criterion.
+        is_multi_call (bool, optional): whether will make multiple calls of
+            `compute_loss` between `backward`. In this case max_losses cannot
+            clamp the loss at each call but only the final average loss over all
+            calls.
         """
-        self.batch_args["n_calls"] = n_calls
-        self.batch_args["max_losses"] = max_losses
+        if self.n_training_calls <= self.n_steps_discriminate_only:
+            # masks only the maximization process
+            max_losses = 0
 
         outputs = self.model(inputs)
         if targets is None:
@@ -113,10 +112,17 @@ class Confuser(object):
         if mask is not None:
             current_losses.masked_fill_(mask, 0.)
 
-        # mean over all besides batch
-        current_losses = current_losses.view(current_losses.size(0), -1).mean(1)
+        if is_multi_call:
+            current_losses = current_losses.view(current_losses.size(0), -1).mean(1)
+            self.losses = self.losses + current_losses / seq_len
 
-        self.losses = self.losses + current_losses
+            if max_losses is not None:
+                self.to_backprop_model = self.losses < max_losses
+        else:
+            if max_losses is not None:
+                self.to_backprop_model = current_losses < max_losses
+
+            self.losses = current_losses / seq_len
 
     def backward(self, retain_graph=False, main_loss=None):
         """
@@ -124,8 +130,6 @@ class Confuser(object):
         confuing loss and of the model parameters to maximize the same loss. This
         has to be before the models `optimizer.step()`.
         """
-        self._end_batch_computations()
-
         if self.to_backprop_model is not None:
             # if nothing to backprop
             if not bool(self.to_backprop_model.any()):

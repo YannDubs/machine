@@ -238,15 +238,17 @@ class EncoderRNN(BaseRNN):
             # E[Loss] = E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
             max_losses = (input_lengths_tensor**2 - 1) / 12
 
-            # I just divide by 2 saying that. if you are at half of the best possible
+            # I just divide by 4 saying that. if you are at half of the best possible
             # it's already good. This is important to decrease unnecessary noise
-            # that could hinder learning
-            max_losses = max_losses / 2
+            # that could hinder learning (note that I divide by 4 and not 2
+            # because I mean : if the distance if half, not if the loss is half
+            # and loss is proportional to n^2
+            max_losses = max_losses / 4
 
             confusers["key_confuser"].compute_loss(keys,
                                                    targets=counting_target_i.unsqueeze(-1),
-                                                   n_calls=input_lengths_tensor,
-                                                   max_losses=max_losses,
+                                                   seq_len=input_lengths_tensor.unsqueeze(-1),
+                                                   max_losses=max_losses.unsqueeze(-1),
                                                    mask=mask)
 
         if self.is_value:

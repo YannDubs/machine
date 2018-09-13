@@ -927,8 +927,6 @@ class AttentionMixer(nn.Module):
             else:
                 raise ValueError("Unkown mode={}".format(self.mode))
 
-            position_perc = position_perc
-
             self._add_to_test(position_perc, "position_percentage", additional)
 
             if self.rounder_perc is not None:
