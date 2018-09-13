@@ -139,7 +139,8 @@ class DecoderRNN(BaseRNN):
                  embedding_noise_kwargs={},
                  is_dev_mode=False,
                  is_viz_train=False,
-                 is_mid_focus=True):
+                 is_mid_focus=True,
+                 is_old_content=False):  # TO DOC : Tru should be used when using pondering
 
         super(DecoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p,
@@ -156,6 +157,7 @@ class DecoderRNN(BaseRNN):
         self.bidirectional_encoder = bidirectional
         self.is_full_focus = is_full_focus
         self.is_mid_focus = is_mid_focus
+        self.is_old_content = is_old_content
 
         self.is_add_all_controller = is_add_all_controller
         self.is_transform_controller = is_transform_controller
@@ -679,6 +681,27 @@ class DecoderRNN(BaseRNN):
                                                        source_lengths_tensor - 1,
                                                        self.max_len - 1)
 
+        if self.is_content_attn:
+            if step > 0:
+                mean_content_old = additional["mean_content"]
+
+            content_attn, content_confidence = self.content_attention(query,
+                                                                      keys,
+                                                                      additional,
+                                                                      **content_method_kwargs)
+            attn = content_attn
+
+            additional["content_confidence"] = content_confidence
+            additional["mean_content"] = torch.bmm(content_attn,
+                                                   rel_counter_encoder[:,
+                                                                       :content_attn.size(2), :]
+                                                   ).squeeze(2)
+
+            self._add_to_visualize([content_confidence, additional["mean_content"]],
+                                   ["content_confidence", "mean_content"],
+                                   additional)
+            self._add_to_test(content_attn, "content_attention", additional)
+
         if self.is_position_attn:
             if step == 0:
                 mean_attn_old = self.mean_attn0.expand(batch_size, 1)
@@ -688,7 +711,9 @@ class DecoderRNN(BaseRNN):
                     mean_content_old = None
             else:
                 mean_attn_old = additional["mean_attn"]
-                mean_content_old = additional["mean_content"]
+
+                if not self.is_old_content:
+                    mean_content_old = additional["mean_content"]
 
             pos_attn, pos_confidence, mu, sigma = self.position_attention(controller_output,
                                                                           source_lengths,
@@ -713,24 +738,6 @@ class DecoderRNN(BaseRNN):
             self._add_to_test([pos_attn, mu, sigma],
                               ["position_attention", "mu", "sigma"],
                               additional)
-
-        if self.is_content_attn:
-            content_attn, content_confidence = self.content_attention(query,
-                                                                      keys,
-                                                                      additional,
-                                                                      **content_method_kwargs)
-            attn = content_attn
-
-            additional["content_confidence"] = content_confidence
-            additional["mean_content"] = torch.bmm(content_attn,
-                                                   rel_counter_encoder[:,
-                                                                       :content_attn.size(2), :]
-                                                   ).squeeze(2)
-
-            self._add_to_visualize([content_confidence, additional["mean_content"]],
-                                   ["content_confidence", "mean_content"],
-                                   additional)
-            self._add_to_test(content_attn, "content_attention", additional)
 
         if self.is_content_attn and self.is_position_attn:
             attn, pos_perc = self.mix_attention(controller_output,

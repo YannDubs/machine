@@ -124,7 +124,7 @@ def get_seq2seq_model(src,
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
                       anneal_bb_const_noise=0,  # DEV MODE : which best
-                      is_pos_perc_weight_conf=True,
+                      mode_attn_mix="normalized_pos_conf",
                       rate_attmix_wait=0,  # TO DOC / DEV MODE
                       is_reg_pos_perc=False,  # TO DOC
                       rounder_perc=None,   # TO DOC / DEV MODE
@@ -372,7 +372,8 @@ def get_seq2seq_model(src,
                                           final_sigma=0,
                                           mode="linear")
 
-    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round)},
+    rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round),
+                                   "start_step": rate_start_round},
                       "stochastic": {"start_step": rate_start_round},
                       None: {}}
 
@@ -421,7 +422,7 @@ def get_seq2seq_model(src,
     n_steps_wait = (rate2steps(rate_attmix_wait)
                     if n_steps_prepare_pos is None else n_steps_prepare_pos)
     attmix_kwargs = dict(is_mlps=is_mlps,
-                         is_pos_perc_weight_conf=is_pos_perc_weight_conf,
+                         mode=mode_attn_mix,
                          is_dev_mode=is_dev_mode,
                          n_steps_wait=n_steps_wait,
                          rounder_perc_kwargs=rounder_perc_kwargs,

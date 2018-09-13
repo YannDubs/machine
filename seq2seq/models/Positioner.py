@@ -216,7 +216,7 @@ class PositionAttention(nn.Module):
                  is_building_blocks_mu=True,
                  is_bb_bias=False,  # TO DOC
                  is_content_attn=True,
-                 is_sequential_attn=False,  # TO DOC
+                 is_sequential_attn=False,  # TO DOC. Only use fi Pondering
                  is_reg_bb_weights=False,
                  is_reg_const_weights=False,  # TO DOC
                  is_reg_old_weights=False,  # TO DOC
@@ -815,15 +815,24 @@ class AttentionMixer(nn.Module):
         hidden_size (int, optional): number of hidden neurons in the MLP.
         is_mlps (bool, optional): whether to use MLP's instead of linear
             function for the weight generators.
-        is_pos_perc_weight_conf (bool, optional): whether to force the model to
-            generate meaningfull confidence, by making the positonal percentange
-            be the `position_confidence / (position_confidence + content_confidence)`.
+        mode ({"generated","normalized_pos_conf","pos_conf"}, optional) mode of
+            the attention mixer. `generated` will generate one from the controller,
+            this might give good results but is less interpretable. `mean_conf`
+            will normalize the positional confidence by `(position_confidence
+            + content_confidence)`, this will force meaningfull confidences for
+            both attentions. The latter should not be used when not using sequential
+            attention because pos% will always be 0.5 if both are confident, i.e
+            content cannot just be used for position to help it.`pos_conf` will
+            directly use the position cofidence, this will force meaningfull
+            positioning confidence but not the content ones. This also says
+            to the network that if position is confident use it regardless of content
+            because it's more extrapolable.
     """
 
     def __init__(self, decoder_output_size,
                  hidden_size=32,
                  is_mlps=True,
-                 is_pos_perc_weight_conf=True,
+                 mode="normalized_pos_conf",
                  is_dev_mode=False,
                  n_steps_wait=0,  # TO DOC
                  is_reg_pos_perc=False,  # TO DOC
@@ -831,7 +840,7 @@ class AttentionMixer(nn.Module):
         super(AttentionMixer, self).__init__()
 
         self.is_dev_mode = is_dev_mode
-        self.is_pos_perc_weight_conf = is_pos_perc_weight_conf
+        self.mode = mode.lower()
         self.n_steps_wait = n_steps_wait
         self.is_reg_pos_perc = is_reg_pos_perc
         self.rounder_perc = _get_rounder(**rounder_perc_kwargs)
@@ -842,7 +851,7 @@ class AttentionMixer(nn.Module):
         # but keeping while testing `additional_controller_features`
         self.position_perc0 = Parameter(torch.tensor(0.5))
 
-        if not self.is_pos_perc_weight_conf:
+        if self.mode == "generated":
             if is_mlps:
                 self.pos_perc_generator = MLP(decoder_output_size +
                                               n_additional_pos_perc_inputs,
@@ -865,7 +874,7 @@ class AttentionMixer(nn.Module):
 
     def extra_repr(self):
         return get_extra_repr(self,
-                              conditional_shows=["is_pos_perc_weight_conf"])
+                              always_shows=["mode"])
 
     def forward(self,
                 decoder_output,
@@ -898,9 +907,11 @@ class AttentionMixer(nn.Module):
         batch_size = decoder_output.size(0)
 
         if additional["training_step"] >= self.n_steps_wait:
-            if self.is_pos_perc_weight_conf:
+            if self.mode == "pos_conf":
+                position_perc = pos_confidence
+            elif self.mode == "normalized_pos_conf":
                 position_perc = pos_confidence / (pos_confidence + content_confidence)
-            else:
+            elif self.mode == "generated":
                 if step == 0:
                     position_perc_old = self.position_perc0.expand(batch_size, 1)
 
@@ -913,6 +924,8 @@ class AttentionMixer(nn.Module):
 
                 position_perc = self.pos_perc_generator(position_perc_inputs)
                 position_perc = self.posperc_to_prob(position_perc)
+            else:
+                raise ValueError("Unkown mode={}".format(self.mode))
 
             position_perc = position_perc
 
