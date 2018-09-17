@@ -108,10 +108,10 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        mode="linear")
     print("pos_variance_weights:", max_p_interpolators["pos_variance_weights"].extra_repr())
 
-    n_steps_interpolate = rate2steps(0)
+    n_steps_interpolate = rate2steps(0.3)
     start_step = rate2steps(0)
     max_p_interpolators["pos%"
-                        ] = HyperparameterInterpolator(1e-2, 1e-2, n_steps_interpolate,
+                        ] = HyperparameterInterpolator(1e-2, 5e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
@@ -741,9 +741,9 @@ class PositionAttention(nn.Module):
             mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
             if "losses" in additional and self.is_reg_clamp_mu:
                 additional["losses"
-                           ]["pos_clamp_mu"] = batch_reduction_f(mu - mu_old,
-                                                                 torch.norm,
-                                                                 p=2)
+                           ]["pos_x_mu"] = batch_reduction_f(mu - mu_old,
+                                                             torch.norm,
+                                                             p=2)
 
         is_update_sigma = self.training and step == 0
 
@@ -759,14 +759,6 @@ class PositionAttention(nn.Module):
                                   torch.zeros_like(sigma) + self.get_sigma(is_update_sigma))
 
             else:
-                # probably the only thing you need is to use this but reduce annealing time
-                # to 0.05 and final min sigma annealing to 1
-                # the add 0.5 to sigma before relu such that the initial value
-                # when start training is ~1 which is ~= to last value of annealing
-                # so no jump
-
-                # if uses att mix wait = 0.05 then you wouldn't have the issue of
-                # the confidence being trained when the sigma is not actually being trained
                 if self.get_sigma.is_annealing:
                     current_min_sigma = self.get_sigma(is_update_sigma)
 
@@ -774,13 +766,13 @@ class PositionAttention(nn.Module):
                     # to sigma generator
                     sigma = current_min_sigma + torch.zeros_like(mu)
                 else:
-                    sigma = F.leaky_relu((self.min_sigma +
-                                          self.sigma_generator(positioning_outputs)),
-                                         negative_slope=0.1)
-                    sigma = self.min_sigma + sigma.unsqueeze(1)
-                    # because using leaky relu still has to add a hard limit to be sure that
-                    # never division by 0. Max mu will be 0.9975
-                    sigma = torch.max(sigma, torch.zeros_like(sigma) + self.min_sigma / 1.5)
+                    unclamped_sigma = (self.get_sigma.final_value +
+                                        self.sigma_generator(positioning_outputs))
+                    sigma = clamp(unclamped_sigma.unsqueeze(1),
+                                  minimum=self.min_sigma,
+                                  is_leaky=True,
+                                  negative_slope=0.1,
+                                  hard_min=self.min_sigma / 1.5)  # Max mu will be 0.9975
 
         if self.is_relative_sigma:
             sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)

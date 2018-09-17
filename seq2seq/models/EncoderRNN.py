@@ -9,8 +9,7 @@ from torch.nn.utils.rnn import pad_sequence
 from .baseRNN import BaseRNN
 
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
-from seq2seq.util.helpers import (get_rnn, get_extra_repr,
-                                  format_source_lengths)
+from seq2seq.util.helpers import (get_rnn, get_extra_repr, format_source_lengths)
 from seq2seq.util.torchextend import ProbabilityConverter
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 
@@ -25,21 +24,41 @@ def _precompute_max_loss(p, max_n=100):
                         device=device)
 
 
-MAX_LOSSES_P1 = _precompute_max_loss(1)
 MAX_LOSSES_P05 = _precompute_max_loss(0.5)
 
 
 def _get_max_loss_key_confuser(input_lengths_list, input_lengths_tensor,
-                               p=2):
+                               p=2, factor=1):
+    """
+    Returns the expected maximum loss of the key confuser depending on p used.
+    `max_loss = ∑_{i=1}^n (i-N/2)**p`
+
+    Args:
+        input_lengths_list (list): list containing the legnth of each sentence
+            of the batch.
+        input_lengths_list (tensor): Float tensor containing the legnth of each
+            sentence of the batch. Should already be on the correc device.
+        p (float, optional): p of the Lp pseudo-norm used as loss.
+        factor (float, optional): by how much to decrease the maxmum loss. If factor
+            is 2 it means that you consider that the maximum loss will be achieved
+            if your prediction is 1/factor (i.e half) way between the correct i
+            and the best worst case output N/2. Factor = 10 means it can be a lot
+            closer to i. This is usefull as there will always be some noise, and you
+            don't want to penalize the model for some noise.
+    """
+
     # E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
     if p == 2:
         max_losses = (input_lengths_tensor**2 - 1) / 12
     elif p == 1:
-        max_losses = MAX_LOSSES_P1[input_lengths_list]
+        # computed by hand and use modulo because different if odd
+        max_losses = (input_lengths_tensor**2 - input_lengths_tensor % 2) / (4 * input_lengths_tensor)
     elif p == 0.5:
         max_losses = MAX_LOSSES_P05[input_lengths_list]
     else:
         raise ValueError("Unkown p={}".format(p))
+
+    max_losses = max_losses / (factor**p)
 
     return max_losses
 
@@ -246,8 +265,7 @@ class EncoderRNN(BaseRNN):
 
         if self.variable_lengths:
             embedded = embedded_unpacked
-            output, _ = nn.utils.rnn.pad_packed_sequence(
-                output, batch_first=True)
+            output, _ = nn.utils.rnn.pad_packed_sequence(output, batch_first=True)
 
         if self.is_key:
             keys, additional = self.key_generator(output,
@@ -263,21 +281,25 @@ class EncoderRNN(BaseRNN):
             # masks everything which finished decoding
             mask = counting_target_i > input_lengths_tensor.unsqueeze(1)
 
-            # it probably can get the total number of words N, which means
-            # that if it had no idea it would predict the mean N/2
-            # in the bet case it should thus have an expected loss
-            # E[Loss] = E[loss(i-N/2)]
+            # important to have an "admissible" heuristic, i.e an upper bound
+            # that is never greater than the real bound. if not when the confuser
+            # outputs some random noise, the key would be regularized in a random manner.
+
+            # the best loss it can get without any infor of j is always predict N/2
+
+            # factor should anneal because after many iterations the discriminator
+            # should start outputting N/2(if it has no idea). In which case
+            # the bound can get tighter and tighter. Do not use low factor at begining
+            # as the discriminator will generate random numbers which could be correct
+            # and we don't want to penalize the generator for that.
             max_losses = _get_max_loss_key_confuser(input_lengths_list, input_lengths_tensor,
-                                                    p=0.5)
+                                                    p=0.5,
+                                                    factor=confusers["key_confuser"
+                                                                     ].get_factor(self.training))
 
-            # I just divide by 4 saying that. if you are at half of the best possible
-            # it's already good. This is important to decrease unnecessary noise
-            # that could hinder learning (note that I divide by 4 and not 2
-            # because I mean : if the distance if half, not if the loss is half
-            # and loss is proportional to n^2
-            max_losses = max_losses / 4
-
-            confusers["key_confuser"].compute_loss(keys,
+            to_cat = input_lengths_tensor.view(-1, 1, 1).expand(-1, max_input_len, 1)
+            key_confuse_input = torch.cat([keys, to_cat], dim=-1)
+            confusers["key_confuser"].compute_loss(key_confuse_input,
                                                    targets=counting_target_i.unsqueeze(-1),
                                                    seq_len=input_lengths_tensor.unsqueeze(-1),
                                                    max_losses=max_losses.unsqueeze(-1),

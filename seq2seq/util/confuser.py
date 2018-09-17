@@ -6,7 +6,8 @@ from torch.optim.lr_scheduler import ExponentialLR
 from seq2seq.optim import Optimizer
 from seq2seq.util.torchextend import MLP
 from seq2seq.util.initialization import linear_init
-from seq2seq.util.helpers import modify_optimizer_grads, clamp, batch_reduction_f
+from seq2seq.util.helpers import (modify_optimizer_grads, clamp, batch_reduction_f,
+                                  HyperparameterInterpolator)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -43,7 +44,10 @@ class Confuser(object):
                  default_targets=None,
                  max_scale=0.1,
                  n_steps_discriminate_only=0,
-                 optim="adam",
+                 optim="adam",  # TO DOC
+                 final_factor=1.07,  # TO DOC
+                 n_steps_interpolate=0,  # TO DOC
+                 factor_kwargs={},  # TO DOC
                  **kwargs):
         self.discriminator_criterion = discriminator_criterion
         self.generator_criterion = (generator_criterion if generator_criterion is not None
@@ -104,6 +108,14 @@ class Confuser(object):
 
         self.max_scale = max_scale
         self.n_steps_discriminate_only = n_steps_discriminate_only
+
+        self.get_factor = HyperparameterInterpolator(10,
+                                                     final_factor,
+                                                     n_steps_interpolate,
+                                                     mode="geometric",
+                                                     start_step=n_steps_discriminate_only,
+                                                     default=10,
+                                                     **factor_kwargs)
 
         self.to_backprop_generator = None
         self.n_training_calls = 0

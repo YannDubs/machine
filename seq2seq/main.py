@@ -515,6 +515,8 @@ def train(train_path,
           rate_prepare_pos=None,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_key=False,  # DEV MODE : TO DOC
+          is_confuse_key_rel=False,  # DEV MODE : TO DOC
+          is_confuse_query=False,  # DEV MODE : TO DOC
           confuser_optim="adam",  # DEV MODE : TO DOC
           plateau_reduce_lr=[5, 0.5],  # DEV MODE : TO DOC
           _initial_model="initial_model",
@@ -694,7 +696,7 @@ def train(train_path,
     confusers = dict()
     if is_confuse_eos:
         confusers["eos_confuser"] = Confuser(nn.MSELoss(),
-                                             seq2seq.decoder.hidden_size,
+                                             seq2seq.decoder.hidden_size + 1,
                                              target_size=1,
                                              hidden_size=None,
                                              bias=False,
@@ -705,12 +707,13 @@ def train(train_path,
         generator = seq2seq.encoder.key_generator
 
         confusers["key_confuser"] = Confuser(nn.L1Loss(reduction="none"),
-                                             seq2seq.encoder.key_size,
+                                             seq2seq.encoder.key_size + 1,  # will add n
                                              generator_criterion=_l05loss,
                                              target_size=1,
                                              n_steps_discriminate_only=rate2steps(0.05),
                                              generator=generator,
-                                             optim=confuser_optim)
+                                             optim=confuser_optim,
+                                             n_steps_interpolate=rate2steps(.3))
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,
