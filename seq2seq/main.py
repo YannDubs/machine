@@ -515,6 +515,7 @@ def train(train_path,
           rate_prepare_pos=None,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_key=False,  # DEV MODE : TO DOC
+          confuser_optim="adam",  # DEV MODE : TO DOC
           plateau_reduce_lr=[5, 0.5],  # DEV MODE : TO DOC
           _initial_model="initial_model",
           **kwargs):
@@ -663,8 +664,7 @@ def train(train_path,
     final_teacher_forcing = 0 if anneal_teacher_forcing != 0 else initial_teacher_forcing
     teacher_forcing_kwargs = dict(initial_value=initial_teacher_forcing,
                                   final_value=final_teacher_forcing,
-                                  n_steps_interpolate=rate2steps(
-                                      anneal_teacher_forcing),
+                                  n_steps_interpolate=rate2steps(anneal_teacher_forcing),
                                   mode="linear")
 
     trainer = SupervisedTrainer(loss=losses,
@@ -698,7 +698,8 @@ def train(train_path,
                                              target_size=1,
                                              hidden_size=None,
                                              bias=False,
-                                             default_targets=torch.tensor(max_len).float())
+                                             default_targets=torch.tensor(max_len).float(),
+                                             optim=confuser_optim)
     if is_confuse_key:
         # don't confuse the whole model, only the key generator
         generator = seq2seq.encoder.key_generator
@@ -708,7 +709,8 @@ def train(train_path,
                                              generator_criterion=_l05loss,
                                              target_size=1,
                                              n_steps_discriminate_only=rate2steps(0.05),
-                                             generator=generator)
+                                             generator=generator,
+                                             optim=confuser_optim)
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,

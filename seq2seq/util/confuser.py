@@ -43,6 +43,7 @@ class Confuser(object):
                  default_targets=None,
                  max_scale=0.1,
                  n_steps_discriminate_only=0,
+                 optim="adam",
                  **kwargs):
         self.discriminator_criterion = discriminator_criterion
         self.generator_criterion = (generator_criterion if generator_criterion is not None
@@ -64,28 +65,42 @@ class Confuser(object):
         # that are similar: i.e saying that should forget count
         #self.discriminator_optim = torch.optim.Adam(self.discriminator.parameters())
 
-        self.discriminator_optim = Optimizer(torch.optim.SGD,
-                                             self.discriminator.parameters(),
-                                             lr=0.05,
-                                             momentum=0.3,
+        self.optim = optim
+        if self.optim == "adampre":
+            self.discriminator_optim = AdamPre(self.discriminator.parameters())
+            self.generator_optim = AdamPre(self.generator.parameters())
+        elif self.optim == "sgd":
+            self.discriminator_optim = Optimizer(torch.optim.SGD,
+                                                 self.discriminator.parameters(),
+                                                 lr=0.05,
+                                                 momentum=0.3,
+                                                 nesterov=True,
+                                                 max_grad_value=1,
+                                                 max_grad_norm=2,
+                                                 scheduler=ExponentialLR,
+                                                 scheduler_kwargs={"gamma": 0.95})
+            self.generator_optim = Optimizer(torch.optim.SGD,
+                                             self.generator.parameters(),
+                                             lr=0.01,
+                                             momentum=0.9,
                                              nesterov=True,
                                              max_grad_value=1,
                                              max_grad_norm=2,
                                              scheduler=ExponentialLR,
                                              scheduler_kwargs={"gamma": 0.95})
-        self.generator_optim = Optimizer(torch.optim.SGD,
-                                         self.generator.parameters(),
-                                         lr=0.01,
-                                         momentum=0.9,
-                                         nesterov=True,
-                                         max_grad_value=1,
-                                         max_grad_norm=2,
-                                         scheduler=ExponentialLR,
-                                         scheduler_kwargs={"gamma": 0.95})
-        """
-        self.discriminator_optim = AdamPre(self.discriminator.parameters())
-        self.generator_optim = AdamPre(self.generator.parameters())
-        """
+        elif self.optim == "adam":
+            self.discriminator_optim = Optimizer(torch.optim.adam,
+                                                 self.discriminator.parameters(),
+                                                 max_grad_value=1,
+                                                 max_grad_norm=2,
+                                                 scheduler=ExponentialLR,
+                                                 scheduler_kwargs={"gamma": 0.95})
+            self.generator_optim = Optimizer(torch.optim.adam,
+                                             self.generator.parameters(),
+                                             max_grad_value=1,
+                                             max_grad_norm=2,
+                                             scheduler=ExponentialLR,
+                                             scheduler_kwargs={"gamma": 0.95})
 
         self.max_scale = max_scale
         self.n_steps_discriminate_only = n_steps_discriminate_only
@@ -148,9 +163,11 @@ class Confuser(object):
 
     def update(self, loss, epoch):
         """Updates the optimizers."""
-        #pass
-        self.discriminator_optim.update(loss, epoch)
-        self.generator_optim.update(loss, epoch)
+        if self.optim == "adampre":
+            pass
+        else:
+            self.discriminator_optim.update(loss, epoch)
+            self.generator_optim.update(loss, epoch)
 
     def compute_loss(self, inputs,
                      targets=None,
