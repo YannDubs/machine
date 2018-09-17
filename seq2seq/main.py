@@ -8,6 +8,7 @@ import shutil
 
 import torch
 import torch.nn as nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from seq2seq.trainer import SupervisedTrainer
 from seq2seq.models import EncoderRNN, DecoderRNN, Seq2seq
@@ -16,7 +17,7 @@ from seq2seq.metrics.metrics import get_metrics
 from seq2seq.dataset.helpers import get_train_dev
 from seq2seq.util.callbacks import EarlyStopping
 from seq2seq.util.confuser import Confuser
-from seq2seq.util.helpers import Rate2Steps
+from seq2seq.util.helpers import Rate2Steps, regularization_loss
 from seq2seq.models.Positioner import get_regularizers_positioner
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -373,8 +374,8 @@ def get_seq2seq_model(src,
                                           mode="linear")
 
     rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round),
-                                   "start_step": rate_start_round},
-                      "stochastic": {"start_step": rate_start_round},
+                                   "start_step": rate2steps(rate_start_round)},
+                      "stochastic": {"start_step": rate2steps(rate_start_round)},
                       None: {}}
 
     rounder_weights_kwargs = dict(name=rounder_weights)
@@ -496,6 +497,8 @@ def train(train_path,
           log_level="info",
           cuda_device=0,
           optim=None,
+          grad_clip_value=2,
+          grad_clip_norm=5,
           resume=False,
           checkpoint_path=None,
           patience=15,
@@ -512,8 +515,7 @@ def train(train_path,
           rate_prepare_pos=None,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_key=False,  # DEV MODE : TO DOC
-          grad_clip_value=None,   # DEV MODE : TO DOC
-          grad_clip_norm=None,   # DEV MODE : TO DOC
+          plateau_reduce_lr=[5, 0.5],  # DEV MODE : TO DOC
           _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.
@@ -553,6 +555,10 @@ def train(train_path,
         cuda_device (int, optional): Set cuda device to use .
         optim ({'adam', 'adadelta', 'adagrad', 'adamax', 'rmsprop', 'sgd'}, optional):
             Name of the optimizer to use.
+        grad_clip_norm (float, optional): L2 Norm to which to clip the gradients.
+            Good default: 1. (default: 5)
+        grad_clip_value (float, optional): Values to which to clip the gradients.
+            Good default: 0.5. (default: 2)
         resume (bool, optional): Whether to resume training from the latest checkpoint.
         checkpoint_path (str, optional): path to load checkpoint from in case
             training should be resumed
@@ -636,8 +642,8 @@ def train(train_path,
                                       total_training_calls=total_training_calls,
                                       max_p_interpolators=max_p_interpolators)
 
-    early_stopper = EarlyStopping(patience=patience) if (
-        patience is not None) else None
+    early_stopper = (EarlyStopping(patience=patience)
+                     if patience is not None else None)
 
     ### DEV MODE ###
     if anneal_eos_weight != 0:
@@ -672,28 +678,37 @@ def train(train_path,
                                 early_stopper=early_stopper,
                                 loss_weight_updater=loss_weight_updater,
                                 teacher_forcing_kwargs=teacher_forcing_kwargs,
-                                initial_model=_initial_model,
-                                clip_value=grad_clip_value,
-                                clip_norm=grad_clip_norm)
+                                initial_model=_initial_model)
 
-    if optim is None and is_amsgrad:
-        optimizer_kwargs = {"amsgrad": True}
-    else:
-        optimizer_kwargs = {}
+    optimizer_kwargs = {"max_grad_value": grad_clip_value,
+                        "max_grad_norm": grad_clip_norm}
+
+    if plateau_reduce_lr is not None:
+        optimizer_kwargs["scheduler"] = ReduceLROnPlateau
+        optimizer_kwargs["scheduler_kwargs"] = dict(patience=plateau_reduce_lr[0],
+                                                    factor=plateau_reduce_lr[1])
+
+    if (optim is None or optim == "adam") and is_amsgrad:
+        optimizer_kwargs["amsgrad"] = True
 
     confusers = dict()
     if is_confuse_eos:
         confusers["eos_confuser"] = Confuser(nn.MSELoss(),
                                              seq2seq.decoder.hidden_size,
-                                             1,
+                                             target_size=1,
                                              hidden_size=None,
                                              bias=False,
                                              default_targets=torch.tensor(max_len).float())
     if is_confuse_key:
-        confusers["key_confuser"] = Confuser(nn.MSELoss(reduction="none"),
+        # don't confuse the whole model, only the key generator
+        generator = seq2seq.encoder.key_generator
+
+        confusers["key_confuser"] = Confuser(nn.L1Loss(reduction="none"),
                                              seq2seq.encoder.key_size,
-                                             1,
-                                             n_steps_discriminate_only=rate2steps(0.01))
+                                             generator_criterion=_l05loss,
+                                             target_size=1,
+                                             n_steps_discriminate_only=rate2steps(0.05),
+                                             generator=generator)
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,
@@ -706,6 +721,8 @@ def train(train_path,
                                                   checkpoint_path=checkpoint_path,
                                                   top_k=1,
                                                   confusers=confusers)
+    # DEV MODE
+    other["confusers"] = confusers
 
     if oneshot is not None:
         (seq2seq,
@@ -740,3 +757,7 @@ def train(train_path,
         logs.write_to_file(output_path)
 
     return seq2seq, history, other
+
+
+def _l05loss(pred, target):
+    return regularization_loss(pred - target, is_no_mean=True, p=0.5)

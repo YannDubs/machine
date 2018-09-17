@@ -1,4 +1,6 @@
 """ Encoder class for a seq2seq. """
+import numpy as np
+
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
@@ -13,6 +15,33 @@ from seq2seq.util.torchextend import ProbabilityConverter
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _precompute_max_loss(p, max_n=100):
+    return torch.tensor([np.mean([np.abs(i - (n + 1) / 2)**p
+                                  for i in range(1, n + 1)])
+                         for n in range(0, max_n)],
+                        dtype=torch.float,
+                        device=device)
+
+
+MAX_LOSSES_P1 = _precompute_max_loss(1)
+MAX_LOSSES_P05 = _precompute_max_loss(0.5)
+
+
+def _get_max_loss_key_confuser(input_lengths_list, input_lengths_tensor,
+                               p=2):
+    # E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
+    if p == 2:
+        max_losses = (input_lengths_tensor**2 - 1) / 12
+    elif p == 1:
+        max_losses = MAX_LOSSES_P1[input_lengths_list]
+    elif p == 0.5:
+        max_losses = MAX_LOSSES_P05[input_lengths_list]
+    else:
+        raise ValueError("Unkown p={}".format(p))
+
+    return max_losses
 
 
 class EncoderRNN(BaseRNN):
@@ -221,12 +250,14 @@ class EncoderRNN(BaseRNN):
                 output, batch_first=True)
 
         if self.is_key:
-            keys, additional = self.key_generator(
-                output, input_lengths_tensor, additional)
+            keys, additional = self.key_generator(output,
+                                                  input_lengths_tensor,
+                                                  additional)
         else:
             keys = output
 
         if "key_confuser" in confusers:
+
             counting_target_i = self.enc_counter.expand(batch_size, -1)[:, :max_input_len]
 
             # masks everything which finished decoding
@@ -235,8 +266,9 @@ class EncoderRNN(BaseRNN):
             # it probably can get the total number of words N, which means
             # that if it had no idea it would predict the mean N/2
             # in the bet case it should thus have an expected loss
-            # E[Loss] = E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
-            max_losses = (input_lengths_tensor**2 - 1) / 12
+            # E[Loss] = E[loss(i-N/2)]
+            max_losses = _get_max_loss_key_confuser(input_lengths_list, input_lengths_tensor,
+                                                    p=0.5)
 
             # I just divide by 4 saying that. if you are at half of the best possible
             # it's already good. This is important to decrease unnecessary noise
@@ -250,6 +282,9 @@ class EncoderRNN(BaseRNN):
                                                    seq_len=input_lengths_tensor.unsqueeze(-1),
                                                    max_losses=max_losses.unsqueeze(-1),
                                                    mask=mask)
+
+        # DEV MODE TO UNDERSTAND CONFUSERS
+        self._add_to_test(keys, "keys", additional)
 
         if self.is_value:
             values, additional = self.value_generator(
@@ -301,3 +336,20 @@ class EncoderRNN(BaseRNN):
             additional["visualize"] = additional.get("visualize", dict())
 
         return additional
+
+    def _add_to_test(self, values, keys, additional):
+        """
+        Save a variable to additional["test"] only if dev mode is on. The
+        variables saved should be the interpretable ones for which you want to
+        know the value of during test time.
+
+        Batch size should always be 1 when predicting with dev mode !
+        """
+        if self.is_dev_mode:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    self._add_to_test(v, k, additional)
+            else:
+                if isinstance(values, torch.Tensor):
+                    values = values.detach().cpu()
+                additional["test"][keys] = values

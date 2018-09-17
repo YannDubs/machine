@@ -114,6 +114,8 @@ class BaseKeyValueQuery(nn.Module):
                 for k, v in zip(keys, values):
                     self._add_to_test(v, k, additional)
             else:
+                if isinstance(values, torch.Tensor):
+                    values = values.detach().cpu()
                 additional["test"][keys] = values
 
     def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
@@ -129,7 +131,7 @@ class BaseKeyValueQuery(nn.Module):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values = values.mean(0).cpu()
+                    values = values.mean(0).detach().cpu()
                 additional["visualize"][keys] = values
 
 

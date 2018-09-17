@@ -777,7 +777,8 @@ class DecoderRNN(BaseRNN):
         if self.is_viz_train:
             additional["visualize"] = additional.get("visualize", dict())
 
-        additional["losses"] = additional.get("losses", dict())
+        if self.training:
+            additional["losses"] = additional.get("losses", dict())
 
         if self.is_position_attn:
             if self.position_attention.is_recursive:
@@ -883,7 +884,7 @@ class DecoderRNN(BaseRNN):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values = values.mean(0).cpu()
+                    values = values.mean(0).detach().cpu()
                 additional["visualize"][keys] = values
 
     def _add_to_test(self, values, keys, additional):
@@ -899,4 +900,6 @@ class DecoderRNN(BaseRNN):
                 for k, v in zip(keys, values):
                     self._add_to_test(v, k, additional)
             else:
+                if isinstance(values, torch.Tensor):
+                    values = values.detach().cpu()
                 additional["test"][keys] = values

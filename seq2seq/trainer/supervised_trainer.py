@@ -5,7 +5,6 @@ import random
 import shutil
 
 import torch
-import torch.nn as nn
 import torchtext
 from torch import optim
 
@@ -19,15 +18,6 @@ from seq2seq.util.checkpoint import Checkpoint
 from seq2seq.util.callbacks import Plotter, History
 from seq2seq.util.log import Log
 from seq2seq.util.helpers import mean, HyperparameterInterpolator
-
-
-def get_clipper(clip_norm=None, clip_value=None):
-    if clip_value is not None:
-        return lambda x: nn.utils.clip_grad_value_(x, clip_value)
-    elif clip_norm is not None:
-        return lambda x: nn.utils.clip_grad_norm_(x, clip_norm)
-    else:
-        return None
 
 
 class SupervisedTrainer(object):
@@ -48,10 +38,6 @@ class SupervisedTrainer(object):
         early_stopper (EarlyStopping, optional): Early stopper that will stop if
             no improvements for a certian amount of time. Only used if dev_data
             given. Should have mode="min". (default: None)
-        clip_norm (float, optional): L2 Norm to which to clip the gradients.
-            Good default: 1. (default: None)
-        clip_value (float, optional): Values to which to clip the gradients.
-            Good default: 0.5. (default: None)
     """
 
     def __init__(self,
@@ -65,8 +51,6 @@ class SupervisedTrainer(object):
                  checkpoint_every=100,
                  print_every=100,
                  early_stopper=None,
-                 clip_norm=None,
-                 clip_value=None,
                  loss_weight_updater=None,
                  teacher_forcing_kwargs={},
                  initial_model=None):  # TO DOC
@@ -85,7 +69,6 @@ class SupervisedTrainer(object):
         self.optimizer = None
         self.checkpoint_every = checkpoint_every
         self.print_every = print_every
-        self.clipper = get_clipper(clip_norm, clip_norm)
         self.loss_weight_updater = loss_weight_updater
         self.teacher_forcing = HyperparameterInterpolator(**teacher_forcing_kwargs)
         self.initial_model = initial_model
@@ -137,16 +120,11 @@ class SupervisedTrainer(object):
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
 
-        for _, confuser in confusers.items():
-            confuser.backward(retain_graph=True, main_loss=loss.get_loss())
-
-        if self.clipper is not None:
-            self.clipper(model.parameters())
-
         self.optimizer.step()
+        model.zero_grad()
 
         for _, confuser in confusers.items():
-            confuser.step_discriminator()
+            confuser()
 
         model.zero_grad()
 
@@ -277,7 +255,9 @@ class SupervisedTrainer(object):
 
                     # compute vals for all monitored sets
                     for m_data in monitor_data:
-                        losses, metrics = self.evaluator.evaluate(model, monitor_data[m_data], self.get_batch_data)
+                        losses, metrics = self.evaluator.evaluate(model,
+                                                                  monitor_data[m_data],
+                                                                  self.get_batch_data)
                         total_loss, log_msg, model_name = self.get_losses(losses, metrics, step)
                         m_logs[m_data] = log_msg
                         logs.write_to_log(m_data, losses, metrics, step)
@@ -353,7 +333,10 @@ class SupervisedTrainer(object):
                     self.plotter.step(loss_total_train, loss_total_dev)
 
             else:
-                self.optimizer.update(epoch_loss_avg, epoch)  # TODO check if this makes sense!
+                self.optimizer.update(loss_total_train, epoch)
+
+            for _, confuser in confusers.items():
+                confuser.update(loss_total_train, epoch)
 
             log.info(log_msg)
 
@@ -372,7 +355,7 @@ class SupervisedTrainer(object):
               checkpoint_path=None,
               top_k=5,
               is_plot=False,
-              optimizer_kwargs={},
+              optimizer_kwargs={"max_grad_norm": 5},
               is_oneshot=False,
               confusers=dict()):
         """ Run training for a given model.
@@ -424,19 +407,17 @@ class SupervisedTrainer(object):
                 return optims[optim_name]
 
             def instantiate_optim(params):
-                return Optimizer(get_optim(optimizer)(model.parameters(), lr=learning_rate, **optimizer_kwargs),
-                                 max_grad_norm=5)
+                return Optimizer(get_optim(optimizer),
+                                 model.parameters(),
+                                 lr=learning_rate,
+                                 **optimizer_kwargs)
 
             self.optimizer = instantiate_optim(model.parameters())
 
-            """
-            for _, confuser in confusers.items():
-                confuser.set_optim(instantiate_optim)
-            """
-
         self.history = History(num_epochs)
         self.plotter = Plotter() if is_plot and dev_data is not None else None
-        self.logger.info("Optimizer: %s, Scheduler: %s" % (self.optimizer.optimizer, self.optimizer.scheduler))
+        self.logger.info("Optimizer: %s, Scheduler: %s" % (self.optimizer.optimizer,
+                                                           self.optimizer.scheduler))
 
         logs, other = self._train_epoches(data, model, num_epochs,
                                           start_epoch, step,

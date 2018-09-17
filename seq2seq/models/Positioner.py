@@ -8,7 +8,8 @@ from torch.nn.utils.rnn import pad_sequence
 from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
                                   HyperparameterInterpolator, get_extra_repr,
                                   clamp, format_source_lengths, Rate2Steps,
-                                  get_indices, Clamper, regularization_loss)
+                                  get_indices, Clamper, regularization_loss,
+                                  batch_reduction_f)
 from seq2seq.util.torchextend import (MLP, StochasticRounding, ConcreteRounding,
                                       ProbabilityConverter, AnnealedGaussianNoise,
                                       L0Gates)
@@ -39,82 +40,82 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
 
     n_steps_interpolate = rate2steps(0.3)
     start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
-    max_p_interpolators["mu_weights"
+    max_p_interpolators["pos_mu_weights"
                         ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
     print()
-    print("mu_weights:", max_p_interpolators["mu_weights"].extra_repr())
+    print("pos_mu_weights:", max_p_interpolators["pos_mu_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0.05)
     start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
-    max_p_interpolators["const_weights"
+    max_p_interpolators["pos_const_weights"
                         ] = HyperparameterInterpolator(5e-2, 1e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=5e-2,
                                                        mode="linear")
 
-    print("const_weights:", max_p_interpolators["const_weights"].extra_repr())
+    print("pos_const_weights:", max_p_interpolators["pos_const_weights"].extra_repr())
 
     # wait until positioning converges
     n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     start_step = rate2steps(0)
     # n_steps_interpolate = rate2steps(0.05 if is_prepare_pos else n_steps_prepare_pos)
     # start_step = rate2steps(0)
-    max_p_interpolators["old_pos_weights"
+    max_p_interpolators["pos_old_weights"
                         ] = HyperparameterInterpolator(5e-2, 0, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=1e-2,
                                                        mode="linear")
 
-    print("old_pos_weights:", max_p_interpolators["old_pos_weights"].extra_repr())
+    print("pos_old_weights:", max_p_interpolators["pos_old_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0)
     start_step = rate2steps(0)
-    max_p_interpolators["clamp_mu"
+    max_p_interpolators["pos_clamp_mu"
                         ] = HyperparameterInterpolator(5e-2, 5e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
 
-    print("clamp_mu:", max_p_interpolators["clamp_mu"].extra_repr())
+    print("pos_clamp_mu:", max_p_interpolators["pos_clamp_mu"].extra_repr())
 
     n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     start_step = rate2steps(0)
-    max_p_interpolators["round_weights"
+    max_p_interpolators["pos_round_weights"
                         ] = HyperparameterInterpolator(0, 5e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
-    print("round_weights:", max_p_interpolators["round_weights"].extra_repr())
+    print("pos_round_weights:", max_p_interpolators["pos_round_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0.3)
     start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
-    max_p_interpolators["l0_weights"
+    max_p_interpolators["pos_l0_weights"
                         ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
-    print("l0_weights:", max_p_interpolators["l0_weights"].extra_repr())
+    print("pos_l0_weights:", max_p_interpolators["pos_l0_weights"].extra_repr())
 
     n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     start_step = rate2steps(0)
-    max_p_interpolators["variance_weights"
+    max_p_interpolators["pos_variance_weights"
                         ] = HyperparameterInterpolator(0., 1e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
-    print("variance_weights:", max_p_interpolators["variance_weights"].extra_repr())
+    print("pos_variance_weights:", max_p_interpolators["pos_variance_weights"].extra_repr())
 
     n_steps_interpolate = rate2steps(0)
     start_step = rate2steps(0)
-    max_p_interpolators["pos_perc"
-                        ] = HyperparameterInterpolator(5e-2, 5e-2, n_steps_interpolate,
+    max_p_interpolators["pos%"
+                        ] = HyperparameterInterpolator(1e-2, 1e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
-    print("pos_perc:", max_p_interpolators["pos_perc"].extra_repr())
+    print("pos%:", max_p_interpolators["pos%"].extra_repr())
     print()
 
     return max_p_interpolators
@@ -585,25 +586,29 @@ class PositionAttention(nn.Module):
             # REGULARIZATION
             if self.is_l0_bb_weights and self.l0_mode == "rounding":
                 gates, loss = self.linear_l0_weights(positioning_outputs)
-                additional["losses"]["l0_weights"] = loss
+                if "losses" in additional:
+                    additional["losses"]["pos_l0_weights"] = loss
                 self._add_to_test(gates, "bb_gates", additional)
 
-            if self.is_reg_round_weights:
+            if "losses" in additional and self.is_reg_round_weights:
                 # used to round mu weight without forcing
                 additional["losses"
-                           ]["round_weights"] = torch.abs(mu_weights -
-                                                          mu_weights.detach().round()
-                                                          ).mean()
+                           ]["pos_round_weights"
+                             ] = batch_reduction_f(torch.abs(mu_weights -
+                                                             mu_weights.detach().round()),
+                                                   torch.mean)
 
-            if self.is_reg_bb_weights:
+            if "losses" in additional and self.is_reg_bb_weights:
                 # used because the building blocks are highly dependant
                 # but maybe not important now that rounds + clamp
                 additional["losses"
-                           ]["mu_weights"] = regularization_loss(mu_weights,
-                                                                 p=self.lp_reg_weights,
-                                                                 dim=-1).mean()
+                           ]["pos_mu_weights"
+                             ] = batch_reduction_f(regularization_loss(mu_weights,
+                                                                       p=self.lp_reg_weights,
+                                                                       dim=-1),
+                                                   torch.mean)
 
-            if self.is_reg_const_weights:
+            if "losses" in additional and self.is_reg_const_weights:
                 # regularizes the constant values that could be used by the network
                 # to bypass the other buidling blocks by having the weights = mu
 
@@ -615,19 +620,23 @@ class PositionAttention(nn.Module):
                 w_idcs_const = get_indices(self.bb_labels, reg_labels_const)
 
                 additional["losses"
-                           ]["const_weights"] = regularization_loss(mu_weights[:, w_idcs_const],
-                                                                    p=self.lp_reg_weights,
-                                                                    dim=-1).mean()
+                           ]["pos_const_weights"
+                             ] = batch_reduction_f(regularization_loss(mu_weights[:, w_idcs_const],
+                                                                       p=self.lp_reg_weights,
+                                                                       dim=-1),
+                                                   torch.mean)
 
-            if self.is_reg_old_weights:
+            if "losses" in additional and self.is_reg_old_weights:
                 # regularizes the weights of the building blocks that are not stable
                 # yet (because they depend on positioning attention)
                 idcs_pos_old = get_indices(self.bb_labels, ["mu_old", "mean_attn_old"])
 
                 additional["losses"
-                           ]["old_pos_weights"] = regularization_loss(mu_weights[:, idcs_pos_old],
-                                                                      p=self.lp_reg_weights,
-                                                                      dim=-1).mean()
+                           ]["pos_old_weights"
+                             ] = batch_reduction_f(regularization_loss(mu_weights[:, idcs_pos_old],
+                                                                       p=self.lp_reg_weights,
+                                                                       dim=-1),
+                                                   torch.mean)
 
             # TRANFORM
             # noising
@@ -679,15 +688,17 @@ class PositionAttention(nn.Module):
             ordered_weights = [dict_mu_weights[l] for l in self.bb_labels]
             mu_weights = torch.stack(ordered_weights, dim=-1)
 
-            if self.is_reg_variance_weights:
+            if "losses" in additional and self.is_reg_variance_weights:
                 # forces the weights to always be relatively similar
                 # after rounding
                 if step != 0:
                     additional["losses"
-                               ]["variance_weights"] = regularization_loss((mu_weights -
-                                                                            additional["mu_weights"]),
+                               ]["pos_variance_weights"
+                                 ] = batch_reduction_f(regularization_loss(mu_weights -
+                                                                           additional["mu_weights"],
                                                                            p=0.5,
-                                                                           dim=-1).mean()
+                                                                           dim=-1),
+                                                       torch.mean)
 
                 additional["mu_weights"] = mu_weights
 
@@ -706,8 +717,9 @@ class PositionAttention(nn.Module):
                     # can use first
                     self.linear_l0_weights.set_weights(mu_weights.unsqueeze(2))
                     mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
-                    additional["losses"
-                               ]["l0_weights"] = self.linear_l0_weights.regularization()
+                    if "losses" in additional:
+                        additional["losses"
+                                   ]["pos_l0_weights"] = self.linear_l0_weights.regularization()
 
                 elif self.l0_mode == "rounding":
                     mu = torch.bmm((mu_weights * gates).unsqueeze(1),
@@ -727,9 +739,11 @@ class PositionAttention(nn.Module):
         if self.is_clamp_mu:
             mu_old = mu
             mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
-            if self.is_reg_clamp_mu:
+            if "losses" in additional and self.is_reg_clamp_mu:
                 additional["losses"
-                           ]["clamp_mu"] = torch.norm(mu - mu_old, p=2)
+                           ]["pos_clamp_mu"] = batch_reduction_f(mu - mu_old,
+                                                                 torch.norm,
+                                                                 p=2)
 
         is_update_sigma = self.training and step == 0
 
@@ -788,7 +802,7 @@ class PositionAttention(nn.Module):
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
-                    values = values.mean(0).cpu()
+                    values = values.mean(0).detach().cpu()
                 additional["visualize"][keys] = values
 
     def _add_to_test(self, values, keys, additional):
@@ -804,6 +818,8 @@ class PositionAttention(nn.Module):
                 for k, v in zip(keys, values):
                     self._add_to_test(v, k, additional)
             else:
+                if isinstance(values, torch.Tensor):
+                    values = values.detach().cpu()
                 additional["test"][keys] = values
 
 
@@ -936,16 +952,53 @@ class AttentionMixer(nn.Module):
 
             self._add_to_test(position_perc, "position_percentage", additional)
 
-        if self.is_reg_pos_perc:
-            # if can solve with positioning pleas do
-            additional["losses"
-                       ]["pos_perc"] = 1 - position_perc.mean()
+        if "losses" in additional:
+            if self.is_reg_pos_perc:
+                # if can solve with positioning pleas do
+                additional["losses"
+                           ]["pos%"] = 1 - position_perc.mean()
+
+            self._rescale_losses(additional["losses"], position_perc)
+            additional["losses"]["pos%"] = (additional["losses"].get("pos%", 0) -
+                                            self._balance_losses(additional["losses"],
+                                                                 position_perc))
 
         # COnvex combination
         attn = (pos_attn * position_perc.unsqueeze(-1) +
                 (1 - position_perc.unsqueeze(-1)) * content_attn)
 
         return attn, position_perc
+
+    def _rescale_losses(self, losses, position_perc):
+        """
+        Rescale the content and positional regularization such that they are
+        proportional to our use of them.
+        """
+        for name in losses.keys():
+            if name.startswith("pos_"):
+                losses[name] = (losses[name] * position_perc).mean()
+            elif name.startswith("cont_"):
+                losses[name] = (losses[name] * (1 - position_perc)).mean()
+
+    def _balance_losses(self, losses, position_perc):
+        """
+        Adds / Remove some pos_perc loss in order to compensate the regularization
+        that has been added for the positional or content attention. I.e
+        the positional or content regularization should only help for convergence of
+        one of the attentions and should not push the network to use one type of
+        attention.
+        """
+        diff_pos_cont_loss = 0
+        for name, loss in losses.items():
+            if name.startswith("pos_"):
+                diff_pos_cont_loss += loss.detach()
+            elif name.startswith("cont_"):
+                diff_pos_cont_loss -= loss.detach()
+
+        # this represents how much the network will be penalized by using
+        # psoitional attn (can be negative)
+        penalty_use_pos = (diff_pos_cont_loss * position_perc).mean()
+        return penalty_use_pos
 
     def _add_to_test(self, values, keys, additional):
         """
@@ -960,4 +1013,6 @@ class AttentionMixer(nn.Module):
                 for k, v in zip(keys, values):
                     self._add_to_test(v, k, additional)
             else:
+                if isinstance(values, torch.Tensor):
+                    values = values.detach().cpu()
                 additional["test"][keys] = values

@@ -2,37 +2,39 @@ import itertools
 
 import torch
 
+
 class Optimizer(object):
     """ The Optimizer class encapsulates torch.optim package and provides functionalities
     for learning rate scheduling and gradient norm clipping.
 
     Args:
-        optim (torch.optim.Optimizer): optimizer object, the parameters to be optimized
-            should be given when instantiating the object, e.g. torch.optim.SGD(params)
+        optim (torch.optim.Optimizer): optimizer object.
         max_grad_norm (float, optional): value used for gradient norm clipping,
-            set 0 to disable (default 0)
+            set None to disable (default None)
     """
 
     _ARG_MAX_GRAD_NORM = 'max_grad_norm'
 
-    def __init__(self, optim, max_grad_norm=0):
-        self.optimizer = optim
-        self.scheduler = None
+    def __init__(self, optim, param,
+                 scheduler=None,
+                 max_grad_norm=None,
+                 max_grad_value=None,
+                 scheduler_kwargs={},
+                 **kwargs):
+        self.optimizer = optim(param, **kwargs)
+        self.scheduler = scheduler(self.optimizer, **scheduler_kwargs)
         self.max_grad_norm = max_grad_norm
-
-    def set_scheduler(self, scheduler):
-        """ Set the learning rate scheduler.
-
-        Args:
-            scheduler (torch.optim.lr_scheduler.*): object of learning rate scheduler,
-               e.g. torch.optim.lr_scheduler.StepLR
-        """
-        self.scheduler = scheduler
+        self.max_grad_value = max_grad_value
 
     def step(self):
         """ Performs a single optimization step, including gradient norm clipping if necessary. """
-        if self.max_grad_norm > 0:
-            params = itertools.chain.from_iterable([group['params'] for group in self.optimizer.param_groups])
+        if self.max_grad_value is None:
+            params = itertools.chain.from_iterable([group['params']
+                                                    for group in self.optimizer.param_groups])
+            torch.nn.utils.clip_grad_value_(params, self.max_grad_norm)
+        if self.max_grad_norm is None:
+            params = itertools.chain.from_iterable([group['params']
+                                                    for group in self.optimizer.param_groups])
             torch.nn.utils.clip_grad_norm_(params, self.max_grad_norm)
         self.optimizer.step()
 

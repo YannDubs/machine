@@ -354,6 +354,8 @@ class Rate2Steps:
         self.total_training_calls = total_training_calls
 
     def __call__(self, rate):
+        if rate > 1:
+            return rate  # rate was actually the final numebr of steps.
         return math.ceil(rate * self.total_training_calls)
 
 
@@ -369,35 +371,7 @@ def l0_loss(x, temperature=10, is_leaky=True, negative_slope=0.01, dim=None):
         return norm.mean(dim=dim)
 
 
-"""def regularization_loss(x, p=2., is_normalize=True, dim=None, **kwargs):
-    Compute the norm for regularization.
-
-    Args:
-        p (float, optional): p of the lp norm to use. `p>=0`, i.e pseudo norms
-            can be used. All of those have been made differentiable (even `p=0`).
-        is_normalize (bool, optional): whether to normalize the output such that
-            the range of the values are similar regardless of p.
-        dim (int, optional): the dimension to reduce. By default flattens `x`
-            then reduces to a scalar.
-        kwargs:
-            Additional parameters to `l0_norm`.
-
-    if p == 0:
-        return l0_norm(x, dim=None, **kwargs)
-
-    if dim is None:
-        loss = torch.norm(x, p=p)
-    else:
-        loss = torch.norm(x, p=p, dim=dim)
-
-    if is_normalize:
-        loss = loss * (x.size(0)**(1 - 1 / p))
-    return loss
-
-"""
-
-
-def regularization_loss(x, p=2., dim=None, lower_bound=1e-4, **kwargs):
+def regularization_loss(x, p=2., dim=None, lower_bound=1e-4, is_no_mean=False, **kwargs):
     """Compute the regularization loss.
 
     Args:
@@ -416,10 +390,13 @@ def regularization_loss(x, p=2., dim=None, lower_bound=1e-4, **kwargs):
     if p == 0:
         return l0_loss(x, dim=None, **kwargs)
 
-    if dim is None:
-        loss = (torch.abs(x)**p).mean()
-    else:
-        loss = (torch.abs(x)**p).mean(dim=dim)
+    loss = (torch.abs(x)**p)
+
+    if not is_no_mean:
+        if dim is None:
+            loss = loss.mean()
+        else:
+            loss = loss.mean(dim=dim)
 
     return loss
 
@@ -442,3 +419,26 @@ def modify_optimizer_grads(optimizer, is_neg=True, mul=None):
                     p.grad.neg_()
                 if mul is not None:
                     p.grad.mul_(mul)
+
+
+def freeze(model):
+    """Freezes a (sub)model."""
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+
+def unfreeze(model):
+    """Unfreezes a (sub)model."""
+    model.train()
+    for p in model.parameters():
+        p.requires_grad = True
+
+
+def batch_reduction_f(x, f, batch_first=True, **kwargs):
+    """Applies a reduction function `fun` batchwise."""
+    if x.dim() <= 1:
+        return x
+    if not batch_first:
+        x = x.transpose(1, 0)
+    return f(x.view(x.size(0), -1), dim=1, **kwargs)

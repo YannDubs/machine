@@ -4,7 +4,7 @@ from torch.nn.parameter import Parameter
 
 from seq2seq.util.initialization import linear_init
 from seq2seq.util.helpers import (get_extra_repr, identity, clamp, Clamper,
-                                  HyperparameterInterpolator)
+                                  HyperparameterInterpolator, batch_reduction_f)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -518,7 +518,7 @@ class L0Gates(nn.Module):
         gates = torch.sigmoid(gates)
         gates = self.rounder(gates)
 
-        loss = gates.mean()
+        loss = batch_reduction_f(gates, torch.mean)
         if self.is_at_least_1:
             loss = torch.relu(loss - 1. / gates.size(-1))
 
