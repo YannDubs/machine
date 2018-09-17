@@ -89,13 +89,13 @@ class Confuser(object):
                                              scheduler=ExponentialLR,
                                              scheduler_kwargs={"gamma": 0.95})
         elif self.optim == "adam":
-            self.discriminator_optim = Optimizer(torch.optim.adam,
+            self.discriminator_optim = Optimizer(torch.optim.Adam,
                                                  self.discriminator.parameters(),
                                                  max_grad_value=1,
                                                  max_grad_norm=2,
                                                  scheduler=ExponentialLR,
                                                  scheduler_kwargs={"gamma": 0.95})
-            self.generator_optim = Optimizer(torch.optim.adam,
+            self.generator_optim = Optimizer(torch.optim.Adam,
                                              self.generator.parameters(),
                                              max_grad_value=1,
                                              max_grad_norm=2,
