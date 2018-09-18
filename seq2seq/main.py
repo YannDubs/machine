@@ -729,8 +729,8 @@ def train(train_path,
                                                optim=confuser_optim,
                                                n_steps_interpolate=rate2steps(.3))
 
-    for confuser in confusers:
-        confuser.discriminator.cuda()
+    for _, confuser in confusers.items():
+        confuser.to(device)
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,
@@ -745,6 +745,9 @@ def train(train_path,
                                                   confusers=confusers)
     # DEV MODE
     other["confusers"] = confusers
+
+    for _, confuser in other["confusers"].items():
+        confuser.to(torch.device("cpu"))
 
     if oneshot is not None:
         (seq2seq,

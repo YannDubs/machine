@@ -124,6 +124,9 @@ class Confuser(object):
 
         self.reset_parameters()
 
+    def to(self, device):
+        self.discriminator.to(device)
+
     def reset_parameters(self):
         if isinstance(self.discriminator, MLP):
             self.discriminator.reset_parameters()
