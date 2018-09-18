@@ -69,7 +69,7 @@ def get_seq2seq_model(src,
                       anneal_mid_noise=0,
                       is_res=False,
                       is_highway=False,
-                      initial_highway=0.5,
+                      initial_highway=0.7,
                       is_single_carry=True,
                       is_additive_highway=True,  # TO DOC
                       is_transform_controller=False,
@@ -114,8 +114,8 @@ def get_seq2seq_model(src,
                       is_reg_clamp_mu=True,  # TO DOC OR EVEN ENFORCE
                       is_reg_round_weights=False,  # TO DOC
                       is_reg_variance_weights=False,  # TO DOC
-                      is_l0_bb_weights=False,  # TO DOC
-                      l0_mode="basic",
+                      is_l0_bb_weights=True,  # TO DOC
+                      l0_mode="rounding",
                       lp_reg_weights=1,  # TO DOC
                       is_clamp_weights=True,  # TO DOC
                       rate_start_round=0,  # TO DOC
@@ -128,7 +128,7 @@ def get_seq2seq_model(src,
                       mode_attn_mix="pos_conf",
                       rate_attmix_wait=0,  # TO DOC / DEV MODE
                       is_reg_pos_perc=False,  # TO DOC
-                      rounder_perc=None,   # TO DOC / DEV MODE
+                      rounder_perc="concrete",   # TO DOC / DEV MODE
                       is_dev_mode=False,
                       is_viz_train=False,
                       is_mid_focus=False):  # TO DOC

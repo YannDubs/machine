@@ -526,7 +526,8 @@ class DecoderRNN(BaseRNN):
         if self.is_dev_mode:
             queries = torch.cat(additional["queries"], dim=1)
             # DEV MODE TO UNDERSTAND CONFUSERS
-            self._add_to_test(queries, "queries", additional)
+            # don't store in additional becuase already all in ret_dict
+            ret_dict["test"]["queries"] = queries.detach().cpu()
 
         ret_dict[DecoderRNN.KEY_SEQUENCE] = sequence_symbols
         ret_dict[DecoderRNN.KEY_LENGTH] = lengths.tolist()
