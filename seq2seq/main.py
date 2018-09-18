@@ -71,7 +71,7 @@ def get_seq2seq_model(src,
                       is_highway=False,
                       initial_highway=0.5,
                       is_single_carry=True,
-                      is_additive_highway=False,  # TO DOC
+                      is_additive_highway=True,  # TO DOC
                       is_transform_controller=False,
                       is_add_all_controller=True,
                       use_attention="pre-rnn",
@@ -125,7 +125,7 @@ def get_seq2seq_model(src,
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
                       anneal_bb_const_noise=0,  # DEV MODE : which best
-                      mode_attn_mix="normalized_pos_conf",
+                      mode_attn_mix="pos_conf",
                       rate_attmix_wait=0,  # TO DOC / DEV MODE
                       is_reg_pos_perc=False,  # TO DOC
                       rounder_perc=None,   # TO DOC / DEV MODE
@@ -515,7 +515,6 @@ def train(train_path,
           rate_prepare_pos=None,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_key=False,  # DEV MODE : TO DOC
-          is_confuse_key_rel=False,  # DEV MODE : TO DOC
           is_confuse_query=False,  # DEV MODE : TO DOC
           confuser_optim="adam",  # DEV MODE : TO DOC
           plateau_reduce_lr=[5, 0.5],  # DEV MODE : TO DOC
@@ -714,6 +713,19 @@ def train(train_path,
                                              generator=generator,
                                              optim=confuser_optim,
                                              n_steps_interpolate=rate2steps(.3))
+
+    if is_confuse_query:
+        # don't confuse the whole model, only the key generator
+        generator = seq2seq.decoder.query_generator
+
+        confusers["query_confuser"] = Confuser(nn.L1Loss(reduction="none"),
+                                               seq2seq.decoder.query_size + 1,  # will add n
+                                               generator_criterion=_l05loss,
+                                               target_size=1,
+                                               n_steps_discriminate_only=rate2steps(0.05),
+                                               generator=generator,
+                                               optim=confuser_optim,
+                                               n_steps_interpolate=rate2steps(.3))
 
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,

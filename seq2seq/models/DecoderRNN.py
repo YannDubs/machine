@@ -19,6 +19,7 @@ from seq2seq.util.torchextend import AnnealedGaussianNoise
 from seq2seq.util.initialization import weights_init, init_param
 from seq2seq.models.KVQ import QueryGenerator
 from seq2seq.models.Positioner import AttentionMixer, PositionAttention
+from seq2seq.util.confuser import get_max_loss_loc_confuser
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -204,6 +205,10 @@ class DecoderRNN(BaseRNN):
         self.rel_counter = torch.arange(0, self.max_len,
                                         dtype=torch.float,
                                         device=device).unsqueeze(1) / (self.max_len - 1)
+        # DEV for confuser
+        self.dec_counter = torch.arange(1, self.max_len + 1,
+                                        dtype=torch.float,
+                                        device=device)
 
         self.embedding = nn.Embedding(self.output_size, self.embedding_size)
         self.noise_input = AnnealedGaussianNoise(**embedding_noise_kwargs)
@@ -377,12 +382,6 @@ class DecoderRNN(BaseRNN):
                 update_idx = ((lengths > step) & eos_batches) != 0
                 lengths[update_idx] = len(sequence_symbols)
 
-                """
-                if "query_confuser" in confusers:
-                    # VERY SLOW FOR CUDA !!
-                    additional["length_dec"] = torch.from_numpy(lengths).to(device)
-                """
-
             return symbols
 
         ret_dict = dict()
@@ -498,6 +497,36 @@ class DecoderRNN(BaseRNN):
                 else:
                     step_attn = None
                 decode(di, step_output, step_attn, additional=additional)
+
+        if "query_confuser" in confusers:
+            # SLOW FOR CUDA : 1 allocation per batch!!
+            output_lengths_tensor = torch.from_numpy(lengths).float().to(device)
+
+            queries = torch.cat(additional["queries"], dim=1)
+            max_decode_len = queries.size(1)
+
+            counting_target_j = self.dec_counter.expand(batch_size, -1)[:, :max_decode_len]
+
+            # masks everything which finished decoding
+            mask = counting_target_j > output_lengths_tensor.unsqueeze(1)
+
+            max_losses = get_max_loss_loc_confuser(output_lengths_tensor,
+                                                   p=0.5,
+                                                   factor=confusers["query_confuser"
+                                                                    ].get_factor(self.training))
+
+            to_cat = output_lengths_tensor.view(-1, 1, 1).expand(-1, max_decode_len, 1)
+            query_confuse_input = torch.cat([queries, to_cat], dim=-1)
+            confusers["query_confuser"].compute_loss(query_confuse_input,
+                                                   targets=counting_target_j.unsqueeze(-1),
+                                                   seq_len=output_lengths_tensor.unsqueeze(-1),
+                                                   max_losses=max_losses.unsqueeze(-1),
+                                                   mask=mask)
+
+        if self.is_dev_mode:
+            queries = torch.cat(additional["queries"], dim=1)
+            # DEV MODE TO UNDERSTAND CONFUSERS
+            self._add_to_test(queries, "queries", additional)
 
         ret_dict[DecoderRNN.KEY_SEQUENCE] = sequence_symbols
         ret_dict[DecoderRNN.KEY_LENGTH] = lengths.tolist()
@@ -649,32 +678,8 @@ class DecoderRNN(BaseRNN):
         else:
             query = controller_output
 
-        if "query_confuser" in confusers:
-            raise ValueError("Please use key_confuser for now.")
-            """
-            counting_target_j = torch.arange(self.max_len,
-                                             dtype=torch.float,
-                                             device=device
-                                             )[step:step + query.size(1)
-                                               ].view(1, -1, 1).expand(batch_size, -1, 1)
-
-            # masks everything which finished decoding
-            mask = atleast_nd(additional["length_dec"] < step + 1,
-                              counting_target_j.dim())
-
-            n_calls = additional["length_dec"].float()
-            # it probably can get the total number of words N, which means
-            # that if it had no idea it would predict the mean N/2
-            # in the bet case it should thus have an expected loss
-            # E[Loss] = E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
-            max_losses = ((n_calls-1) / 2)**2
-
-            confusers["query_confuser"].compute_loss(query,
-                                                     targets=counting_target_j,
-                                                     n_calls=n_calls,
-                                                     max_losses=None,
-                                                     mask=mask)
-            """
+        if "query_confuser" in confusers or self.is_dev_mode:
+            additional["queries"] = additional.get("queries", []) + [query]
 
         unormalized_counter = self.rel_counter.expand(batch_size, -1, 1)
         rel_counter_encoder = renormalize_input_length(unormalized_counter,

@@ -1,6 +1,4 @@
 """ Encoder class for a seq2seq. """
-import numpy as np
-
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
@@ -12,55 +10,9 @@ from seq2seq.util.initialization import replicate_hidden0, init_param, weights_i
 from seq2seq.util.helpers import (get_rnn, get_extra_repr, format_source_lengths)
 from seq2seq.util.torchextend import ProbabilityConverter
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
+from seq2seq.util.confuser import get_max_loss_loc_confuser
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def _precompute_max_loss(p, max_n=100):
-    return torch.tensor([np.mean([np.abs(i - (n + 1) / 2)**p
-                                  for i in range(1, n + 1)])
-                         for n in range(0, max_n)],
-                        dtype=torch.float,
-                        device=device)
-
-
-MAX_LOSSES_P05 = _precompute_max_loss(0.5)
-
-
-def _get_max_loss_key_confuser(input_lengths_list, input_lengths_tensor,
-                               p=2, factor=1):
-    """
-    Returns the expected maximum loss of the key confuser depending on p used.
-    `max_loss = ∑_{i=1}^n (i-N/2)**p`
-
-    Args:
-        input_lengths_list (list): list containing the legnth of each sentence
-            of the batch.
-        input_lengths_list (tensor): Float tensor containing the legnth of each
-            sentence of the batch. Should already be on the correc device.
-        p (float, optional): p of the Lp pseudo-norm used as loss.
-        factor (float, optional): by how much to decrease the maxmum loss. If factor
-            is 2 it means that you consider that the maximum loss will be achieved
-            if your prediction is 1/factor (i.e half) way between the correct i
-            and the best worst case output N/2. Factor = 10 means it can be a lot
-            closer to i. This is usefull as there will always be some noise, and you
-            don't want to penalize the model for some noise.
-    """
-
-    # E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
-    if p == 2:
-        max_losses = (input_lengths_tensor**2 - 1) / 12
-    elif p == 1:
-        # computed by hand and use modulo because different if odd
-        max_losses = (input_lengths_tensor**2 - input_lengths_tensor % 2) / (4 * input_lengths_tensor)
-    elif p == 0.5:
-        max_losses = MAX_LOSSES_P05[input_lengths_list]
-    else:
-        raise ValueError("Unkown p={}".format(p))
-
-    max_losses = max_losses / (factor**p)
-
-    return max_losses
 
 
 class EncoderRNN(BaseRNN):
@@ -278,7 +230,7 @@ class EncoderRNN(BaseRNN):
 
             counting_target_i = self.enc_counter.expand(batch_size, -1)[:, :max_input_len]
 
-            # masks everything which finished decoding
+            # masks everything which is not an input
             mask = counting_target_i > input_lengths_tensor.unsqueeze(1)
 
             # important to have an "admissible" heuristic, i.e an upper bound
@@ -292,10 +244,10 @@ class EncoderRNN(BaseRNN):
             # the bound can get tighter and tighter. Do not use low factor at begining
             # as the discriminator will generate random numbers which could be correct
             # and we don't want to penalize the generator for that.
-            max_losses = _get_max_loss_key_confuser(input_lengths_list, input_lengths_tensor,
-                                                    p=0.5,
-                                                    factor=confusers["key_confuser"
-                                                                     ].get_factor(self.training))
+            max_losses = get_max_loss_loc_confuser(input_lengths_tensor,
+                                                   p=0.5,
+                                                   factor=confusers["key_confuser"
+                                                                    ].get_factor(self.training))
 
             to_cat = input_lengths_tensor.view(-1, 1, 1).expand(-1, max_input_len, 1)
             key_confuse_input = torch.cat([keys, to_cat], dim=-1)

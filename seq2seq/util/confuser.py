@@ -1,3 +1,5 @@
+import numpy as np
+
 import torch
 
 import torch.nn as nn
@@ -265,6 +267,51 @@ class Confuser(object):
         # RESET
         self._prepare_for_new_batch()
         self.n_training_calls += 1
+
+
+def _precompute_max_loss(p, max_n=100):
+    return torch.tensor(np.array([np.mean([np.abs(i - (n + 1) / 2)**p
+                                           for i in range(1, n + 1)])
+                                  for n in range(0, max_n)], dtype=np.float32)
+                        ).float().to(device)
+
+
+MAX_LOSSES_P05 = _precompute_max_loss(0.5)
+
+
+def get_max_loss_loc_confuser(input_lengths_tensor, p=2, factor=1):
+    """
+    Returns the expected maximum loss of the key confuser depending on p used.
+    `max_loss = ∑_{i=1}^n (i-N/2)**p`
+
+    Args:
+        input_lengths_list (tensor): Float tensor containing the legnth of each
+            sentence of the batch. Should already be on the correc device.
+        p (float, optional): p of the Lp pseudo-norm used as loss.
+        factor (float, optional): by how much to decrease the maxmum loss. If factor
+            is 2 it means that you consider that the maximum loss will be achieved
+            if your prediction is 1/factor (i.e half) way between the correct i
+            and the best worst case output N/2. Factor = 10 means it can be a lot
+            closer to i. This is usefull as there will always be some noise, and you
+            don't want to penalize the model for some noise.
+    """
+
+    # E[(i-N/2)**2] = VAR(i) = (n**2 - 1)/12
+    if p == 2:
+        max_losses = (input_lengths_tensor**2 - 1) / 12
+    elif p == 1:
+        # computed by hand and use modulo because different if odd
+        max_losses = (input_lengths_tensor**2 - input_lengths_tensor % 2) / (4 * input_lengths_tensor)
+    elif p == 0.5:
+        max_losses = MAX_LOSSES_P05[input_lengths_tensor.long()]
+    else:
+        raise ValueError("Unkown p={}".format(p))
+
+    max_losses = max_losses / (factor**p)
+
+    return max_losses
+
+# # # # TEST # # # #
 
 
 from torch.optim.optimizer import Optimizer as BaseOptimizer
