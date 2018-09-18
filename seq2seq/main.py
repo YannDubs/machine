@@ -729,6 +729,9 @@ def train(train_path,
                                                optim=confuser_optim,
                                                n_steps_interpolate=rate2steps(.3))
 
+    for confuser in confusers:
+        confuser.discriminator.cuda()
+
     seq2seq, logs, history, other = trainer.train(seq2seq,
                                                   train,
                                                   num_epochs=epochs,
