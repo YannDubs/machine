@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
@@ -120,7 +122,9 @@ class ProbabilityConverter(nn.Module):
                  bias_transformer=identity,
                  # TO DOC + say that _probability_to_bias doesn't take into accoiuntr transform => needs to be boundary case transform
                  temperature_transformer=Clamper(minimum=0.1, maximum=10., is_leaky=True,
-                                                 hard_min=0.01)):
+                                                 hard_min=0.01),
+                 fix_point=None):  # TO DOC. only hard sigmoid
+
         super(ProbabilityConverter, self).__init__()
         self.min_p = min_p
         self.activation = activation
@@ -131,36 +135,59 @@ class ProbabilityConverter(nn.Module):
         self.initial_x = initial_x
         self.bias_transformer = bias_transformer
         self.temperature_transformer = temperature_transformer
+        self.fix_point = fix_point
+
+        if self.fix_point is not None:
+
+            if self.activation != "hard-sigmoid":
+                warnings.warn("Can only use `fix_point` if activation=hard-sigmoid. Replace {} by 'hard-sigmoid' ".format(self.activation))
+                self.activation = 'hard-sigmoid'
+
+            if self.is_bias:
+                warnings.warn("Cannot use bias when using `fix_point`. Setting to False and using temperature instead. ".format(self.activation))
+                self.is_bias = False
+                self.is_temperature = True
 
         self.reset_parameters()
 
     def reset_parameters(self):
-        if self.is_temperature:
-            self.temperature = Parameter(torch.tensor(self.initial_temperature)).to(device)
-        else:
-            self.temperature = torch.tensor(self.initial_temperature).to(device)
+        if self.fix_point is None:
+            if self.is_temperature:
+                self.temperature = Parameter(torch.tensor(self.initial_temperature)).to(device)
+            else:
+                self.temperature = torch.tensor(self.initial_temperature).to(device)
 
-        initial_bias = self._probability_to_bias(self.initial_probability,
-                                                 initial_x=self.initial_x)
-        if self.is_bias:
-            self.bias = Parameter(torch.tensor(initial_bias)).to(device)
+            initial_bias = self._probability_to_bias(self.initial_probability,
+                                                     initial_x=self.initial_x)
+            if self.is_bias:
+                self.bias = Parameter(torch.tensor(initial_bias)).to(device)
+            else:
+                self.bias = torch.tensor(initial_bias).to(device)
         else:
-            self.bias = torch.tensor(initial_bias).to(device)
+            self.initial_temperature = self._fix_point_init(self.initial_probability,
+                                                            initial_x=self.initial_x)
+            if self.is_temperature:
+                self.temperature = Parameter(torch.tensor(self.initial_temperature)).to(device)
+            else:
+                self.temperature = torch.tensor(self.initial_temperature).to(device)
 
     def forward(self, x):
         temperature = self.temperature_transformer(self.temperature)
-        bias = self.bias_transformer(self.bias)
+        if self.fix_point is None:
+            bias = self.bias_transformer(self.bias)
 
         if self.activation == "sigmoid":
             full_p = torch.sigmoid((x + bias) * temperature)
         elif self.activation == "hard-sigmoid":
-            # makes the default similar to hard sigmoid
-            x = 0.2 * ((x + bias) * temperature) + 0.5
-            full_p = clamp(x, minimum=0., maximum=1., is_leaky=False)
+            if self.fix_point is not None:
+                y = 0.2 * ((x - self.fix_point[0]) * temperature) + self.fix_point[1]
+            else:
+                y = 0.2 * ((x + bias) * temperature) + 0.5
+            full_p = clamp(y, minimum=0., maximum=1., is_leaky=False)
 
         elif self.activation == "leaky-hard-sigmoid":
-            x = 0.2 * ((x + bias) * temperature) + 0.5
-            full_p = clamp(x, minimum=0.1, maximum=.9,
+            y = 0.2 * ((x + bias) * temperature) + 0.5
+            full_p = clamp(y, minimum=0.1, maximum=.9,
                            is_leaky=True, negative_slope=0.01,
                            hard_min=0, hard_max=0)
         else:
@@ -176,7 +203,8 @@ class ProbabilityConverter(nn.Module):
                               conditional_shows=["is_temperature", "is_bias",
                                                  "initial_temperature",
                                                  "initial_probability",
-                                                 "initial_x"])
+                                                 "initial_x",
+                                                 "fix_point"])
 
     def _probability_to_bias(self, p, initial_x=0):
         assert p > self.min_p and p < 1 - self.min_p
@@ -192,6 +220,16 @@ class ProbabilityConverter(nn.Module):
             raise ValueError("Unkown activation : {}".format(self.activation))
 
         return bias
+
+    def _fix_point_init(self, p, initial_x=0):
+        assert p > self.min_p and p < 1 - self.min_p
+        range_p = 1 - self.min_p * 2
+        p = (p - self.min_p) / range_p
+        p = torch.tensor(p, dtype=torch.float)
+
+        temperature = 5 * (p - self.fix_point[1]) / (initial_x - self.fix_point[0])
+
+        return temperature
 
 
 class GaussianNoise(nn.Module):

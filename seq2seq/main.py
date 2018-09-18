@@ -493,13 +493,13 @@ def train(train_path,
           initial_teacher_forcing=0.2,
           batch_size=32,
           eval_batch_size=256,
-          lr=0.001,
+          lr=0.005,
           save_every=100,
           print_every=100,
           log_level="info",
           cuda_device=0,
           optim=None,
-          grad_clip_value=2,
+          grad_clip_value=3,
           grad_clip_norm=5,
           resume=False,
           checkpoint_path=None,
@@ -519,7 +519,7 @@ def train(train_path,
           is_confuse_key=False,  # DEV MODE : TO DOC
           is_confuse_query=False,  # DEV MODE : TO DOC
           confuser_optim="adam",  # DEV MODE : TO DOC
-          plateau_reduce_lr=[5, 0.5],  # DEV MODE : TO DOC
+          plateau_reduce_lr=[4, 0.5],  # DEV MODE : TO DOC
           _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.

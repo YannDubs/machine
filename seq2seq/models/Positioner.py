@@ -372,16 +372,9 @@ class PositionAttention(nn.Module):
         # initialize the converter giving the middle between both bounds (such that
         # never vanishing grad)
         sigma0 = (self.initial_sigma + self.min_sigma) / 2
-        self.sigma_to_conf = ProbabilityConverter(is_temperature=True,
-                                                  is_bias=True,
-                                                  initial_x=-1 * sigma0,
-                                                  bias_transformer=F.leaky_relu,
-                                                  initial_temperature=0.5,
-                                                  temperature_transformer=Clamper(minimum=0.5,
-                                                                                  maximum=10,
-                                                                                  is_leaky=True,
-                                                                                  hard_min=0.01
-                                                                                  ))
+        self.sigma_to_conf = ProbabilityConverter(activation="hard-sigmoid",
+                                                  fix_point=(- self.min_sigma / 1.5, 1),
+                                                  initial_x=-1 * sigma0)
 
         self.mu0 = Parameter(torch.tensor(0.0))
         self.sigma0 = Parameter(torch.tensor(sigma0))
@@ -483,6 +476,10 @@ class PositionAttention(nn.Module):
         # could use relu but for gradient flow use leaky relu
         pos_confidence = self.sigma_to_conf(-sigma)
         pos_confidence = pos_confidence.mean(dim=-1)
+
+        # relative sigma after sigma to conf because not fair that cannot be as confident
+        if self.is_relative_sigma:
+            sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
 
         rel_counter_encoder = renormalize_input_length(self.rel_counter.expand(batch_size, -1, 1),
                                                        source_lengths_tensor - 1,
@@ -767,15 +764,12 @@ class PositionAttention(nn.Module):
                     sigma = current_min_sigma + torch.zeros_like(mu)
                 else:
                     unclamped_sigma = (self.get_sigma.final_value +
-                                        self.sigma_generator(positioning_outputs))
+                                       self.sigma_generator(positioning_outputs))
                     sigma = clamp(unclamped_sigma.unsqueeze(1),
                                   minimum=self.min_sigma,
                                   is_leaky=True,
                                   negative_slope=0.1,
                                   hard_min=self.min_sigma / 1.5)  # Max mu will be 0.9975
-
-        if self.is_relative_sigma:
-            sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
 
         return mu, sigma
 
