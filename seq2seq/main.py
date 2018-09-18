@@ -120,8 +120,8 @@ def get_seq2seq_model(src,
                       is_clamp_weights=True,  # TO DOC
                       rate_start_round=0,  # TO DOC
                       anneal_temp_round=0.1,  # TO DOC
-                      rounder_weights=None,  # TO DOC
-                      rounder_mu=None,  # TO DOC
+                      rounder_weights="concrete",  # TO DOC
+                      rounder_mu="concrete",  # TO DOC
                       anneal_bb_weights_noise=0,  # DEV MODE : which best
                       anneal_bb_noise=0,  # DEV MODE : which best
                       anneal_bb_const_noise=0,  # DEV MODE : which best
@@ -373,9 +373,11 @@ def get_seq2seq_model(src,
                                           final_sigma=0,
                                           mode="linear")
 
+    n_steps_start_round = (rate2steps(rate_start_round)
+                           if n_steps_prepare_pos is None else n_steps_prepare_pos)
     rounders_kwars = {"concrete": {"n_steps_interpolate": rate2steps(anneal_temp_round),
-                                   "start_step": rate2steps(rate_start_round)},
-                      "stochastic": {"start_step": rate2steps(rate_start_round)},
+                                   "start_step": n_steps_start_round},
+                      "stochastic": {"start_step": n_steps_start_round},
                       None: {}}
 
     rounder_weights_kwargs = dict(name=rounder_weights)
@@ -512,7 +514,7 @@ def train(train_path,
           content_method='scaledot',
           is_basic_init=False,
           is_amsgrad=False,
-          rate_prepare_pos=None,  # DEV MODE : TO DOC
+          rate_prepare_pos=0.05,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_key=False,  # DEV MODE : TO DOC
           is_confuse_query=False,  # DEV MODE : TO DOC
