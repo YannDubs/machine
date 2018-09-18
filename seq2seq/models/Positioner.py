@@ -270,6 +270,7 @@ class PositionAttention(nn.Module):
         self.positioner = _get_positioner(self.positioning_method)
         self.is_force_sigma = is_force_sigma
         self.min_sigma = min_sigma
+        self.hard_min_sigma = self.min_sigma/1.5 # Max mu will be 0.9975
         self.initial_sigma = initial_sigma
         if self.n_steps_prepare_pos is None:
             self.get_sigma = HyperparameterInterpolator(self.initial_sigma,
@@ -362,22 +363,16 @@ class PositionAttention(nn.Module):
             else:
                 raise ValueError("Unkown `l0_mode = {}`".format(l0_mode))
 
-        # inital sigma will not be 0 so have to change that value : I use the
-        # expectation of the initialization of sigma0 although what we really
-        # care about is sigma1 which could be very different from sigma0 note that
-        # sigma0 is 1 but we give it in as -sigma, so it's as if start at -1
+        """
+        sigma0 = ((self.initial_sigma + self.min_sigma) / 2
+                  if self.n_steps_prepare_pos is None else self.get_sigma.final_value)
 
-        # low initial temperature because min_sigma will change during
-        # training and doesn't want vanishing gradients when it reaches small min_sigma
-        # initialize the converter giving the middle between both bounds (such that
-        # never vanishing grad)
-        sigma0 = (self.initial_sigma + self.min_sigma) / 2
+
         self.sigma_to_conf = ProbabilityConverter(activation="hard-sigmoid",
                                                   fix_point=(- self.min_sigma / 1.5, 1),
-                                                  initial_x=-1 * sigma0)
+                                                  initial_x=-sigma0)
+        """
 
-        self.mu0 = Parameter(torch.tensor(0.0))
-        self.sigma0 = Parameter(torch.tensor(sigma0))
         self.mean_attn_olds_factor = Parameter(torch.tensor(0.0))
 
         self.reset_parameters()
@@ -392,7 +387,8 @@ class PositionAttention(nn.Module):
         # could start at 0 if want to bias to start reading from the begining
         self.mu0 = Parameter(torch.tensor(0.5))
 
-        sigma0 = (self.initial_sigma + self.min_sigma) / 2
+        sigma0 = ((self.initial_sigma + self.min_sigma) / 2
+                  if self.n_steps_prepare_pos is None else self.get_sigma.final_value)
         self.sigma0 = Parameter(torch.tensor(sigma0))
 
         init_param(self.mean_attn_olds_factor, is_positive=True)
@@ -470,12 +466,22 @@ class PositionAttention(nn.Module):
                                              source_lengths_tensor,
                                              additional)
 
+        """
         # smaller sigma means more confident => - sigma
         # -sigma can only be negative but you still want confidence between 0
         # and 1 so need to shift to right => add only a positive bias
         # could use relu but for gradient flow use leaky relu
         pos_confidence = self.sigma_to_conf(-sigma)
         pos_confidence = pos_confidence.mean(dim=-1)
+        #pos_confidence, _ = pos_attn.max(dim=-1)
+        """
+
+        # was hesitating between max pos_attn and linear_sigma to conf. The former
+        # never went to 0 (so pos% always). The latter went abrubtly to 0 very
+        # quickly so hard to get out. Decided to go with a middle ground
+        min_p = 0.001
+        pos_confidence = torch.exp(-sigma**2 + self.hard_min_sigma**2) * (1-min_p)
+        pos_confidence = pos_confidence.squeeze(-1)
 
         # relative sigma after sigma to conf because not fair that cannot be as confident
         if self.is_relative_sigma:
@@ -652,7 +658,7 @@ class PositionAttention(nn.Module):
                                                              is_update=(step == 0 and i == 0))
 
             # initialization helper
-            if additional["training_step"] < self.n_steps_init_help:
+            if self.training and additional["training_step"] < self.n_steps_init_help:
                 # adds either 0.5 or -0.5
                 dict_mu_weights["rel_counter_decoder"] = (dict_mu_weights["rel_counter_decoder"] +
                                                           0.5 - (additional["training_step"] % 2))
@@ -769,7 +775,7 @@ class PositionAttention(nn.Module):
                                   minimum=self.min_sigma,
                                   is_leaky=True,
                                   negative_slope=0.1,
-                                  hard_min=self.min_sigma / 1.5)  # Max mu will be 0.9975
+                                  hard_min=self.hard_min_sigma)
 
         return mu, sigma
 
@@ -908,7 +914,7 @@ class AttentionMixer(nn.Module):
         """
         batch_size = decoder_output.size(0)
 
-        if additional["training_step"] >= self.n_steps_wait:
+        if not self.training or additional["training_step"] >= self.n_steps_wait:
             if self.mode == "pos_conf":
                 position_perc = pos_confidence
             elif self.mode == "normalized_pos_conf":
@@ -928,15 +934,13 @@ class AttentionMixer(nn.Module):
                 position_perc = self.posperc_to_prob(position_perc)
             else:
                 raise ValueError("Unkown mode={}".format(self.mode))
-
-            self._add_to_test(position_perc, "position_percentage", additional)
-
-            if self.rounder_perc is not None:
-                position_perc = self.rounder_perc(position_perc)
         else:
             position_perc = torch.tensor(0.5).to(device).expand(batch_size, 1)
 
-            self._add_to_test(position_perc, "position_percentage", additional)
+        if self.rounder_perc is not None:
+            position_perc = self.rounder_perc(position_perc)
+
+        self._add_to_test(position_perc, "position_percentage", additional)
 
         if "losses" in additional:
             if self.is_reg_pos_perc:

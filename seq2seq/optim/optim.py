@@ -22,7 +22,8 @@ class Optimizer(object):
                  scheduler_kwargs={},
                  **kwargs):
         self.optimizer = optim(param, **kwargs)
-        self.scheduler = scheduler(self.optimizer, **scheduler_kwargs)
+        self.scheduler = (scheduler(self.optimizer, **scheduler_kwargs)
+                          if scheduler is not None else None)
         self.max_grad_norm = max_grad_norm
         self.max_grad_value = max_grad_value
 

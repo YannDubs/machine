@@ -518,10 +518,10 @@ class DecoderRNN(BaseRNN):
             to_cat = output_lengths_tensor.view(-1, 1, 1).expand(-1, max_decode_len, 1)
             query_confuse_input = torch.cat([queries, to_cat], dim=-1)
             confusers["query_confuser"].compute_loss(query_confuse_input,
-                                                   targets=counting_target_j.unsqueeze(-1),
-                                                   seq_len=output_lengths_tensor.unsqueeze(-1),
-                                                   max_losses=max_losses.unsqueeze(-1),
-                                                   mask=mask)
+                                                     targets=counting_target_j.unsqueeze(-1),
+                                                     seq_len=output_lengths_tensor.unsqueeze(-1),
+                                                     max_losses=max_losses.unsqueeze(-1),
+                                                     mask=mask)
 
         if self.is_dev_mode:
             queries = torch.cat(additional["queries"], dim=1)
@@ -757,9 +757,10 @@ class DecoderRNN(BaseRNN):
 
             additional["position_percentage"] = pos_perc
             self._add_to_visualize(pos_perc, "position_percentage", additional)
-            self._add_to_test([content_confidence, pos_confidence],
-                              ["content_confidence", "pos_confidence"],
-                              additional)
+
+            self._add_to_test([pos_confidence], ["pos_confidence"], additional)
+            if self.mix_attention.mode != "pos_conf":
+                self._add_to_test(content_confidence, "content_confidence", additional)
 
         additional["mean_attn"] = torch.bmm(attn,
                                             rel_counter_encoder[:, :attn.size(2), :]

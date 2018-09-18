@@ -128,6 +128,7 @@ class ContentAttention(nn.Module):
         # apply local mask
         logits.masked_fill_(mask, -float('inf'))
 
+        # SHOULD USE REAL MAX AS IT IS DIFFERENTIABLE (JUST 1 for the max)
         approx_max_logit = logits.logsumexp(dim=-1)
 
         self._add_to_test([logits, approx_max_logit],
