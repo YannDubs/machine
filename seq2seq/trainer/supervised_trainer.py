@@ -313,7 +313,7 @@ class SupervisedTrainer(object):
             log_msg = "Finished epoch %d: Train %s" % (epoch, loss_msg)
 
             train_losses, metrics = self.evaluator.evaluate(model, data, self.get_batch_data)
-            loss_total_train, log_, model_name = self.get_losses(losses, metrics, step)
+            loss_total_train, log_, model_name = self.get_losses(train_losses, metrics, step)
 
             if dev_data is not None:
                 dev_losses, metrics = self.evaluator.evaluate(model, dev_data, self.get_batch_data)
