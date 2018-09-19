@@ -9,7 +9,8 @@ from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
                                   HyperparameterInterpolator, get_extra_repr,
                                   clamp, format_source_lengths, Rate2Steps,
                                   get_indices, Clamper, regularization_loss,
-                                  batch_reduction_f)
+                                  batch_reduction_f, add_to_test, add_to_visualize,
+                                  add_regularization)
 from seq2seq.util.torchextend import (MLP, StochasticRounding, ConcreteRounding,
                                       ProbabilityConverter, AnnealedGaussianNoise,
                                       L0Gates)
@@ -116,6 +117,11 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        default=0,
                                                        mode="linear")
     print("pos%:", max_p_interpolators["pos%"].extra_repr())
+    print()
+
+    # used for balancing, don't rescale
+    max_p_interpolators["balancing"] = None
+    print("balancing%:", max_p_interpolators["balancing"])
     print()
 
     return max_p_interpolators
@@ -270,7 +276,7 @@ class PositionAttention(nn.Module):
         self.positioner = _get_positioner(self.positioning_method)
         self.is_force_sigma = is_force_sigma
         self.min_sigma = min_sigma
-        self.hard_min_sigma = self.min_sigma/1.5 # Max mu will be 0.9975
+        self.hard_min_sigma = self.min_sigma / 1.5  # Max mu will be 0.9975
         self.initial_sigma = initial_sigma
         if self.n_steps_prepare_pos is None:
             self.get_sigma = HyperparameterInterpolator(self.initial_sigma,
@@ -480,7 +486,7 @@ class PositionAttention(nn.Module):
         # never went to 0 (so pos% always). The latter went abrubtly to 0 very
         # quickly so hard to get out. Decided to go with a middle ground
         min_p = 0.001
-        pos_confidence = torch.exp(-sigma**2 + self.hard_min_sigma**2) * (1-min_p)
+        pos_confidence = torch.exp(-sigma**2 + self.hard_min_sigma**2) * (1 - min_p)
         pos_confidence = pos_confidence.squeeze(-1)
 
         # relative sigma after sigma to conf because not fair that cannot be as confident
@@ -580,7 +586,7 @@ class PositionAttention(nn.Module):
         # ["mu_old", "mean_attn_old", "rel_counter_decoder", "single_step"]
         # ["mean_content_old"] ["bias"]
 
-        self._add_to_test(mu_weights, 'raw_mu_weights', additional)
+        add_to_test(mu_weights, 'raw_mu_weights', additional, self.is_dev_mode)
 
         if self.is_building_blocks_mu:
             bb_labels_old = [l for l in ["mu_old", "mean_attn_old", "mean_content_old"]
@@ -590,26 +596,25 @@ class PositionAttention(nn.Module):
             if self.is_l0_bb_weights and self.l0_mode == "rounding":
                 gates, loss = self.linear_l0_weights(positioning_outputs)
                 if "losses" in additional:
-                    additional["losses"]["pos_l0_weights"] = loss
-                self._add_to_test(gates, "bb_gates", additional)
+                    add_regularization(loss, "pos_l0_weights", additional)
+
+                add_to_test(gates, "bb_gates", additional, self.is_dev_mode)
 
             if "losses" in additional and self.is_reg_round_weights:
                 # used to round mu weight without forcing
-                additional["losses"
-                           ]["pos_round_weights"
-                             ] = batch_reduction_f(torch.abs(mu_weights -
-                                                             mu_weights.detach().round()),
-                                                   torch.mean)
+                loss = batch_reduction_f(torch.abs(mu_weights -
+                                                   mu_weights.detach().round()),
+                                         torch.mean)
+                add_regularization(loss, "pos_round_weights", additional)
 
             if "losses" in additional and self.is_reg_bb_weights:
                 # used because the building blocks are highly dependant
                 # but maybe not important now that rounds + clamp
-                additional["losses"
-                           ]["pos_mu_weights"
-                             ] = batch_reduction_f(regularization_loss(mu_weights,
-                                                                       p=self.lp_reg_weights,
-                                                                       dim=-1),
-                                                   torch.mean)
+                loss = batch_reduction_f(regularization_loss(mu_weights,
+                                                             p=self.lp_reg_weights,
+                                                             dim=-1),
+                                         torch.mean)
+                add_regularization(loss, "pos_mu_weights", additional)
 
             if "losses" in additional and self.is_reg_const_weights:
                 # regularizes the constant values that could be used by the network
@@ -622,24 +627,22 @@ class PositionAttention(nn.Module):
                 reg_labels_const = ["single_step"] + (["bias"] if add_bias else [])
                 w_idcs_const = get_indices(self.bb_labels, reg_labels_const)
 
-                additional["losses"
-                           ]["pos_const_weights"
-                             ] = batch_reduction_f(regularization_loss(mu_weights[:, w_idcs_const],
-                                                                       p=self.lp_reg_weights,
-                                                                       dim=-1),
-                                                   torch.mean)
+                loss = batch_reduction_f(regularization_loss(mu_weights[:, w_idcs_const],
+                                                             p=self.lp_reg_weights,
+                                                             dim=-1),
+                                         torch.mean)
+                add_regularization(loss, "pos_const_weights", additional)
 
             if "losses" in additional and self.is_reg_old_weights:
                 # regularizes the weights of the building blocks that are not stable
                 # yet (because they depend on positioning attention)
                 idcs_pos_old = get_indices(self.bb_labels, ["mu_old", "mean_attn_old"])
 
-                additional["losses"
-                           ]["pos_old_weights"
-                             ] = batch_reduction_f(regularization_loss(mu_weights[:, idcs_pos_old],
-                                                                       p=self.lp_reg_weights,
-                                                                       dim=-1),
-                                                   torch.mean)
+                loss = batch_reduction_f(regularization_loss(mu_weights[:, idcs_pos_old],
+                                                             p=self.lp_reg_weights,
+                                                             dim=-1),
+                                         torch.mean)
+                add_regularization(loss, "pos_old_weights", additional)
 
             # TRANFORM
             # noising
@@ -695,24 +698,23 @@ class PositionAttention(nn.Module):
                 # forces the weights to always be relatively similar
                 # after rounding
                 if step != 0:
-                    additional["losses"
-                               ]["pos_variance_weights"
-                                 ] = batch_reduction_f(regularization_loss(mu_weights -
-                                                                           additional["mu_weights"],
-                                                                           p=0.5,
-                                                                           dim=-1),
-                                                       torch.mean)
+                    loss = batch_reduction_f(regularization_loss(mu_weights -
+                                                                 additional["mu_weights"],
+                                                                 p=0.5,
+                                                                 dim=-1),
+                                             torch.mean)
+                    add_regularization(loss, "pos_variance_weights", additional)
 
                 additional["mu_weights"] = mu_weights
 
             # IF WANT TO PLOT AFTER ROUNDING
-            self._add_to_test([mu_weights, building_blocks],
-                              ['mu_weights', 'building_blocks'],
-                              additional)
+            add_to_test([mu_weights, building_blocks],
+                        ['mu_weights', 'building_blocks'],
+                        additional, self.is_dev_mode)
 
-            self._add_to_visualize([mu_weights, building_blocks],
-                                   ['mu_weights', 'building_blocks'],
-                                   additional)
+            add_to_visualize([mu_weights, building_blocks],
+                             ['mu_weights', 'building_blocks'],
+                             additional)
 
             if self.is_l0_bb_weights:
                 if self.l0_mode == "basic":
@@ -721,8 +723,8 @@ class PositionAttention(nn.Module):
                     self.linear_l0_weights.set_weights(mu_weights.unsqueeze(2))
                     mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
                     if "losses" in additional:
-                        additional["losses"
-                                   ]["pos_l0_weights"] = self.linear_l0_weights.regularization()
+                        loss = self.linear_l0_weights.regularization()
+                        add_regularization(loss, "pos_l0_weights", additional)
 
                 elif self.l0_mode == "rounding":
                     mu = torch.bmm((mu_weights * gates).unsqueeze(1),
@@ -743,10 +745,10 @@ class PositionAttention(nn.Module):
             mu_old = mu
             mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
             if "losses" in additional and self.is_reg_clamp_mu:
-                additional["losses"
-                           ]["pos_x_mu"] = batch_reduction_f(mu - mu_old,
-                                                             torch.norm,
-                                                             p=2)
+                loss = batch_reduction_f(mu - mu_old,
+                                         torch.norm,
+                                         p=2)
+                add_regularization(loss, "pos_clamp_mu", additional)
 
         is_update_sigma = self.training and step == 0
 
@@ -778,41 +780,6 @@ class PositionAttention(nn.Module):
                                   hard_min=self.hard_min_sigma)
 
         return mu, sigma
-
-    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
-        """Every `save_every` batch, adds a certain variable to the `visualization`
-        sub-dictionary of additional. Such variables should be the ones that are
-        interpretable, and for which the size is independant of the source length.
-        I.e avaregae over the source length if it is dependant.
-
-        The variables will then be averaged over decoding step and over batch_size.
-        """
-        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_visualize(v, k, additional)
-            else:
-                # averages over the batch size
-                if isinstance(values, torch.Tensor):
-                    values = values.mean(0).detach().cpu()
-                additional["visualize"][keys] = values
-
-    def _add_to_test(self, values, keys, additional):
-        """
-        Save a variable to additional["test"] only if dev mode is on. The
-        variables saved should be the interpretable ones for which you want to
-        know the value of during test time.
-
-        Batch size should always be 1 when predicting with dev mode !
-        """
-        if self.is_dev_mode:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_test(v, k, additional)
-            else:
-                if isinstance(values, torch.Tensor):
-                    values = values.detach().cpu()
-                additional["test"][keys] = values
 
 
 class AttentionMixer(nn.Module):
@@ -940,18 +907,17 @@ class AttentionMixer(nn.Module):
         if self.rounder_perc is not None:
             position_perc = self.rounder_perc(position_perc)
 
-        self._add_to_test(position_perc, "position_percentage", additional)
+        add_to_test(position_perc, "position_percentage", additional, self.is_dev_mode)
 
         if "losses" in additional:
             if self.is_reg_pos_perc:
                 # if can solve with positioning pleas do
-                additional["losses"
-                           ]["pos%"] = 1 - position_perc.mean()
+                loss = 1 - position_perc.mean()
+                add_regularization(loss, "pos%", additional)
 
             self._rescale_losses(additional["losses"], position_perc)
-            additional["losses"]["pos%"] = (additional["losses"].get("pos%", 0) -
-                                            self._balance_losses(additional["losses"],
-                                                                 position_perc))
+            additional["losses"]["balancing"] = -self._balance_losses(additional["losses"],
+                                                                      position_perc)
 
         # COnvex combination
         attn = (pos_attn * position_perc.unsqueeze(-1) +
@@ -989,20 +955,3 @@ class AttentionMixer(nn.Module):
         # psoitional attn (can be negative)
         penalty_use_pos = (diff_pos_cont_loss * position_perc).mean()
         return penalty_use_pos
-
-    def _add_to_test(self, values, keys, additional):
-        """
-        Save a variable to additional["test"] only if dev mode is on. The
-        variables saved should be the interpretable ones for which you want to
-        know the value of during test time.
-
-        Batch size should always be 1 when predicting with dev mode !
-        """
-        if self.is_dev_mode:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_test(v, k, additional)
-            else:
-                if isinstance(values, torch.Tensor):
-                    values = values.detach().cpu()
-                additional["test"][keys] = values

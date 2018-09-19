@@ -97,6 +97,11 @@ def rm_prefix(s, prefix):
     return s
 
 
+def rm_dict_keys(dic, keys_to_rm):
+    """remove a set of keys from a dictionary not in place."""
+    return {k: v for k, v in dic.items() if k not in keys_to_rm}
+
+
 def get_default_args(func):
     """Get the default arguments of a function as a dictionary."""
     signature = inspect.signature(func)
@@ -442,3 +447,53 @@ def batch_reduction_f(x, f, batch_first=True, **kwargs):
     if not batch_first:
         x = x.transpose(1, 0)
     return f(x.view(x.size(0), -1), dim=1, **kwargs)
+
+
+def add_to_visualize(values, keys, additional, save_every_n_batches=15):
+    """Every `save_every` batch, adds a certain variable to the `visualization`
+    sub-dictionary of additional. Such variables should be the ones that are
+    interpretable, and for which the size is independant of the source length.
+    I.e avaregae over the source length if it is dependant.
+
+    The variables will then be averaged over decoding step and over batch_size.
+    """
+    if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
+        if isinstance(keys, list):
+            for k, v in zip(keys, values):
+                add_to_visualize(v, k, additional, save_every_n_batches=save_every_n_batches)
+        else:
+            # averages over the batch size
+            if isinstance(values, torch.Tensor):
+                values = values.mean(0).detach().cpu()
+            additional["visualize"][keys] = values
+
+
+def add_to_test(values, keys, additional, is_dev_mode):
+    """
+    Save a variable to additional["test"] only if dev mode is on. The
+    variables saved should be the interpretable ones for which you want to
+    know the value of during test time.
+
+    Batch size should always be 1 when predicting with dev mode !
+    """
+    if is_dev_mode:
+        if isinstance(keys, list):
+            for k, v in zip(keys, values):
+                add_to_test(v, k, additional, is_dev_mode)
+        else:
+            if isinstance(values, torch.Tensor):
+                values = values.detach().cpu()
+            additional["test"][keys] = values
+
+
+def add_regularization(loss, loss_name, additional, is_visualize=True, **kwargs):
+    """
+    Adds a regularization loss.
+    """
+    additional["losses"][loss_name] = loss
+
+    """
+    if is_visualize:
+        name = 'losses_{}'.format(loss_name)
+        add_to_visualize(loss, name, additional, **kwargs)
+    """

@@ -1,6 +1,7 @@
 
 from __future__ import print_function
 import math
+import warnings
 import torch.nn as nn
 import torch
 import numpy as np
@@ -221,9 +222,11 @@ class Loss(object):
                  anneal_max_proportion=0,
                  rate_start_step=0.1,
                  add_every_i=1,
+                 additional=None,
                  **kwargs):
         """ Adds an other loss """
         if name_other not in self.max_p_interpolators:
+            warnings.warn("using default interpolator for {}".format(name_other))
             n_steps_interpolate = self.rate2steps(anneal_max_proportion)
             start_step = self.rate2steps(rate_start_step)
             self.max_p_interpolators[name_other
@@ -233,8 +236,12 @@ class Loss(object):
                                                                     start_step=start_step,
                                                                     **kwargs)
             self.counters[name_other] = 0
+        elif self.max_p_interpolators[name_other] is None:
+            max_proportion = None
+            weight = 1
+        else:
+            max_proportion = self.max_p_interpolators[name_other](is_update)
 
-        max_proportion = self.max_p_interpolators[name_other](is_update)
         self.counters[name_other] += 1
 
         if self.counters[name_other] % add_every_i != 0:
@@ -247,7 +254,16 @@ class Loss(object):
             if other_loss_detached > max_loss:
                 weight = max_loss / other_loss_detached
 
-        self.acc_loss = self.acc_loss + weight * other_loss
+        weighted_loss = weight * other_loss
+        self.acc_loss = self.acc_loss + weighted_loss
+
+        # # # # # DEV MODE # # # # #
+        if additional is not None:
+            additional["visualize"]["losses_weighted_{}".format(name_other)
+                                    ] = weighted_loss.item() / self.acc_loss.item()
+            additional["visualize"]["losses_{}".format(name_other)
+                                    ] = other_loss.item()
+        # # # # # # # # # # # # # # #
 
     def update_weights(self, new_weights):
         """Update the weight of the loss of certain tokens.

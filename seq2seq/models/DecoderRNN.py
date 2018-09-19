@@ -14,7 +14,8 @@ from .baseRNN import BaseRNN
 
 from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
                                   get_extra_repr, format_source_lengths,
-                                  recursive_update)
+                                  recursive_update, add_to_visualize,
+                                  add_to_test)
 from seq2seq.util.torchextend import AnnealedGaussianNoise
 from seq2seq.util.initialization import weights_init, init_param
 from seq2seq.models.KVQ import QueryGenerator
@@ -703,10 +704,10 @@ class DecoderRNN(BaseRNN):
                                                                        :content_attn.size(2), :]
                                                    ).squeeze(2)
 
-            self._add_to_visualize([content_confidence, additional["mean_content"]],
-                                   ["content_confidence", "mean_content"],
-                                   additional)
-            self._add_to_test(content_attn, "content_attention", additional)
+            add_to_visualize([content_confidence, additional["mean_content"]],
+                             ["content_confidence", "mean_content"],
+                             additional)
+            add_to_test(content_attn, "content_attention", additional, self.is_dev_mode)
 
         if self.is_position_attn:
             if step == 0:
@@ -737,13 +738,13 @@ class DecoderRNN(BaseRNN):
 
             attn = pos_attn
 
-            self._add_to_visualize([mu, sigma, pos_confidence],
-                                   ["mu", "sigma", "pos_confidence"],
-                                   additional)
+            add_to_visualize([mu, sigma, pos_confidence],
+                             ["mu", "sigma", "pos_confidence"],
+                             additional)
 
-            self._add_to_test([pos_attn, mu, sigma],
-                              ["position_attention", "mu", "sigma"],
-                              additional)
+            add_to_test([pos_attn, mu, sigma],
+                        ["position_attention", "mu", "sigma"],
+                        additional, self.is_dev_mode)
 
         if self.is_content_attn and self.is_position_attn:
             attn, pos_perc = self.mix_attention(controller_output,
@@ -756,11 +757,11 @@ class DecoderRNN(BaseRNN):
                                                 additional)
 
             additional["position_percentage"] = pos_perc
-            self._add_to_visualize(pos_perc, "position_percentage", additional)
+            add_to_visualize(pos_perc, "position_percentage", additional)
 
-            self._add_to_test([pos_confidence], ["pos_confidence"], additional)
+            add_to_test([pos_confidence], ["pos_confidence"], additional, self.is_dev_mode)
             if self.mix_attention.mode != "pos_conf":
-                self._add_to_test(content_confidence, "content_confidence", additional)
+                add_to_test(content_confidence, "content_confidence", additional, self.is_dev_mode)
 
         additional["mean_attn"] = torch.bmm(attn,
                                             rel_counter_encoder[:, :attn.size(2), :]
@@ -768,9 +769,9 @@ class DecoderRNN(BaseRNN):
 
         context = torch.bmm(attn, values)
 
-        self._add_to_visualize([additional["mean_attn"], step],
-                               ["mean_attn", "step"],
-                               additional)
+        add_to_visualize([additional["mean_attn"], step],
+                         ["mean_attn", "step"],
+                         additional)
 
         return context, attn
 
@@ -875,38 +876,3 @@ class DecoderRNN(BaseRNN):
                 additional_features.extend([position_perc_old])
 
         return additional_features
-
-    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
-        """Every `save_every` batch, adds a certain variable to the `visualization`
-        sub-dictionary of additional. Such variables should be the ones that are
-        interpretable, and for which the size is independant of the source length.
-        I.e avaregae over the source length if it is dependant.
-
-        The variables will then be averaged over decoding step and over batch_size.
-        """
-        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_visualize(v, k, additional)
-            else:
-                # averages over the batch size
-                if isinstance(values, torch.Tensor):
-                    values = values.mean(0).detach().cpu()
-                additional["visualize"][keys] = values
-
-    def _add_to_test(self, values, keys, additional):
-        """
-        Save a variable to additional["test"] only if dev mode is on. The
-        variables saved should be the interpretable ones for which you want to
-        know the value of during test time.
-
-        Batch size should always be 1 when predicting with dev mode !
-        """
-        if self.is_dev_mode:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_test(v, k, additional)
-            else:
-                if isinstance(values, torch.Tensor):
-                    values = values.detach().cpu()
-                additional["test"][keys] = values

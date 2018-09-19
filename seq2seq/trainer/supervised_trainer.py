@@ -115,7 +115,7 @@ class SupervisedTrainer(object):
                         kwargs = kwargs[0]
                     # additional loss is already averaged over batch, here only
                     # avaerage over time steps
-                    loss.add_loss(k, mean(additional_loss), **kwargs)
+                    loss.add_loss(k, mean(additional_loss), additional=other, **kwargs)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
