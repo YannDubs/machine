@@ -252,14 +252,18 @@ class Loss(object):
             other_loss_detached = other_loss.detach()
             # only scale ifother_loss_detached >  max_loss
             weight = (max_loss / other_loss_detached).clamp(max=1.)
+            weight[torch.isnan(weight)] = 1.
 
         weighted_loss = (weight * other_loss).mean()
         self.acc_loss = self.acc_loss + weighted_loss
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
-            additional["visualize"]["losses_weighted_{}".format(name_other)
-                                    ] = weighted_loss.item() / self.acc_loss.item()
+            if self.acc_loss.item() == 0:
+                warnings.warn("Skipping losses_weighted as acc_loss == 0")
+            else:
+                additional["visualize"]["losses_weighted_{}".format(name_other)
+                                        ] = weighted_loss.item() / self.acc_loss.item()
             additional["visualize"]["losses_{}".format(name_other)
                                     ] = other_loss.mean().item()
         # # # # # # # # # # # # # # #

@@ -295,7 +295,7 @@ class PositionAttention(nn.Module):
         # Building blocks
         self.is_building_blocks_mu = is_building_blocks_mu
         self.is_bb_bias = is_bb_bias
-        self.single_step = torch.tensor(1 / (self.max_len - 1)).to(device)
+        self.single_step = torch.tensor(1. / (self.max_len - 1)).to(device)
         self.rel_counter = torch.arange(0, self.max_len,
                                         dtype=torch.float,
                                         device=device).unsqueeze(1) / (self.max_len - 1)
