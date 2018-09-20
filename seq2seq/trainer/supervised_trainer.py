@@ -114,8 +114,8 @@ class SupervisedTrainer(object):
                         # unnecessarily saves multiple times kwargs (i.e it's always the same)
                         kwargs = kwargs[0]
                     # avaerage over time steps
-                    loss.add_regularization_loss(k, mean(additional_loss),
-                                                 additional=other, **kwargs)
+                    loss.store_regularization_loss(k, mean(additional_loss),
+                                                   additional=other, **kwargs)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)

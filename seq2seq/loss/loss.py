@@ -136,6 +136,7 @@ class Loss(object):
             raise ValueError("Criterion has to be a subclass of torch.nn._Loss")
         # accumulated loss
         self.acc_loss = 0
+        self.regularization_loses = dict()
         # normalization term
         self.norm_term = 0
 
@@ -149,6 +150,7 @@ class Loss(object):
         """ Reset the accumulated loss. """
         self.acc_loss = 0
         self.norm_term = 0
+        self.regularization_loses = dict()
 
     def get_loss(self):
         """ Get the loss.
@@ -207,24 +209,26 @@ class Loss(object):
         """
         if type(self.acc_loss) is int:
             raise ValueError("No loss to back propagate.")
-        self.acc_loss.backward(retain_graph=retain_graph)
+
+        total_loss = self._apply_regularization_losses()
+        total_loss.backward(retain_graph=retain_graph)
 
     def scale_loss(self, factor):
         """ Scale loss with a factor
         """
         self.acc_loss = self.acc_loss * factor
 
-    def add_regularization_loss(self, name_other, other_loss,
-                                weight=None,
-                                is_update=True,
-                                initial_max_proportion=0,
-                                final_max_proportion=1e-2,
-                                anneal_max_proportion=0,
-                                rate_start_step=0.1,
-                                add_every_i=1,
-                                additional=None,
-                                **kwargs):
-        """ Adds an other loss """
+    def store_regularization_loss(self, name_other, other_loss,
+                                  weight=None,
+                                  is_update=True,
+                                  initial_max_proportion=0,
+                                  final_max_proportion=1e-2,
+                                  anneal_max_proportion=0,
+                                  rate_start_step=0.1,
+                                  add_every_i=1,
+                                  additional=None,
+                                  **kwargs):
+        """ Use a regularization loss. """
         if name_other not in self.max_p_interpolators:
             warnings.warn("using default interpolator for {}".format(name_other))
             n_steps_interpolate = self.rate2steps(anneal_max_proportion)
@@ -255,7 +259,7 @@ class Loss(object):
             weight[torch.isnan(weight)] = 1.
 
         weighted_loss = (weight * other_loss).mean()
-        self.acc_loss = self.acc_loss + weighted_loss
+        self.regularization_loses[name_other] = weighted_loss
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
@@ -267,6 +271,12 @@ class Loss(object):
             additional["visualize"]["losses_{}".format(name_other)
                                     ] = other_loss.mean().item()
         # # # # # # # # # # # # # # #
+
+    def _apply_regularization_losses(self):
+        """Use the stored regularization losses."""
+        total_loss = self.acc_loss + sum(self.regularization_loses.values())
+
+        return total_loss
 
     def update_weights(self, new_weights):
         """Update the weight of the loss of certain tokens.
