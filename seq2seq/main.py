@@ -765,11 +765,16 @@ def train(train_path,
                                 checkpoint_path=get_latest(output_dir),
                                 top_k=1)
 
+    latest_model = get_latest(output_dir)
+    if os.path.join(output_dir, _initial_model) == latest_model:
+        shutil.copytree(latest_model, latest_model + " copy")
+
     if name_checkpoint is not None:
         _rename_latest(output_dir, name_checkpoint)
         final_model = os.path.join(output_dir, name_checkpoint)
     else:
-        final_model = os.path.join(output_dir, get_latest(output_dir))
+        latest_model = get_latest(output_dir)
+        final_model = os.path.join(output_dir, latest_model)
 
     # save the initial model to see initialization
     shutil.move(os.path.join(output_dir, _initial_model),
