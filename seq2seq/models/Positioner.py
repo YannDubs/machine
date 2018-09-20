@@ -117,7 +117,6 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        default=0,
                                                        mode="linear")
     print("pos%:", max_p_interpolators["pos%"].extra_repr())
-    print()
 
     # used for balancing, don't rescale
     max_p_interpolators["balancing"] = None
@@ -724,6 +723,7 @@ class PositionAttention(nn.Module):
                     mu = self.linear_l0_weights(building_blocks.unsqueeze(1))
                     if "losses" in additional:
                         loss = self.linear_l0_weights.regularization()
+                        # IS OUTPUT BATCHWISE ?
                         add_regularization(loss, "pos_l0_weights", additional)
 
                 elif self.l0_mode == "rounding":
@@ -912,7 +912,7 @@ class AttentionMixer(nn.Module):
         if "losses" in additional:
             if self.is_reg_pos_perc:
                 # if can solve with positioning pleas do
-                loss = 1 - position_perc.mean()
+                loss = 1 - batch_reduction_f(position_perc, torch.mean)
                 add_regularization(loss, "pos%", additional)
 
             self._rescale_losses(additional["losses"], position_perc)
@@ -930,11 +930,14 @@ class AttentionMixer(nn.Module):
         Rescale the content and positional regularization such that they are
         proportional to our use of them.
         """
+        # don't broadcast multiplication : want vector output
+        position_perc = position_perc.view(-1)
+
         for name in losses.keys():
             if name.startswith("pos_"):
-                losses[name] = (losses[name] * position_perc).mean()
+                losses[name] = losses[name] * position_perc
             elif name.startswith("cont_"):
-                losses[name] = (losses[name] * (1 - position_perc)).mean()
+                losses[name] = losses[name] * (1 - position_perc)
 
     def _balance_losses(self, losses, position_perc):
         """
@@ -944,6 +947,9 @@ class AttentionMixer(nn.Module):
         one of the attentions and should not push the network to use one type of
         attention.
         """
+        # don't broadcast multiplication : want vector output
+        position_perc = position_perc.view(-1)
+
         diff_pos_cont_loss = 0
         for name, loss in losses.items():
             if name.startswith("pos_"):
@@ -953,5 +959,5 @@ class AttentionMixer(nn.Module):
 
         # this represents how much the network will be penalized by using
         # psoitional attn (can be negative)
-        penalty_use_pos = (diff_pos_cont_loss * position_perc).mean()
+        penalty_use_pos = diff_pos_cont_loss * position_perc
         return penalty_use_pos

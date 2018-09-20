@@ -214,16 +214,16 @@ class Loss(object):
         """
         self.acc_loss = self.acc_loss * factor
 
-    def add_loss(self, name_other, other_loss,
-                 weight=None,
-                 is_update=True,
-                 initial_max_proportion=0,
-                 final_max_proportion=1e-2,
-                 anneal_max_proportion=0,
-                 rate_start_step=0.1,
-                 add_every_i=1,
-                 additional=None,
-                 **kwargs):
+    def add_regularization_loss(self, name_other, other_loss,
+                                weight=None,
+                                is_update=True,
+                                initial_max_proportion=0,
+                                final_max_proportion=1e-2,
+                                anneal_max_proportion=0,
+                                rate_start_step=0.1,
+                                add_every_i=1,
+                                additional=None,
+                                **kwargs):
         """ Adds an other loss """
         if name_other not in self.max_p_interpolators:
             warnings.warn("using default interpolator for {}".format(name_other))
@@ -248,13 +248,12 @@ class Loss(object):
             return
 
         if weight is None:
-            weight = 1
             max_loss = max_proportion * self.acc_loss.detach()
             other_loss_detached = other_loss.detach()
-            if other_loss_detached > max_loss:
-                weight = max_loss / other_loss_detached
+            # only scale ifother_loss_detached >  max_loss
+            weight = (max_loss / other_loss_detached).clamp(max=1.)
 
-        weighted_loss = weight * other_loss
+        weighted_loss = (weight * other_loss).mean()
         self.acc_loss = self.acc_loss + weighted_loss
 
         # # # # # DEV MODE # # # # #
@@ -262,7 +261,7 @@ class Loss(object):
             additional["visualize"]["losses_weighted_{}".format(name_other)
                                     ] = weighted_loss.item() / self.acc_loss.item()
             additional["visualize"]["losses_{}".format(name_other)
-                                    ] = other_loss.item()
+                                    ] = other_loss.mean().item()
         # # # # # # # # # # # # # # #
 
     def update_weights(self, new_weights):
