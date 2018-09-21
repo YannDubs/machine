@@ -333,15 +333,17 @@ class HyperparameterInterpolator:
         if is_update:
             self.n_training_calls += 1
 
-        if self.start_step > self.n_training_calls:
+        if self.start_step >= self.n_training_calls:
             return self.default
+
+        n_actual_training_calls = self.n_training_calls - self.start_step
 
         if self.is_annealing:
             current = self.initial_value
             if self.mode == "geometric":
-                current *= (self.factor ** self.n_training_calls)
+                current *= (self.factor ** n_actual_training_calls)
             elif self.mode == "linear":
-                current += self.factor * self.n_training_calls
+                current += self.factor * n_actual_training_calls
         else:
             current = self.final_value
 

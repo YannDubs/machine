@@ -256,18 +256,31 @@ class Loss(object):
             # only scale ifother_loss_detached >  max_loss
             weight = (max_loss / other_loss_detached).clamp(max=1.)
             weight[torch.isnan(weight)] = 1.
+            if any(weight < 0):
+                print("max_proportion", max_proportion)
+                print("self.acc_loss.detach()", self.acc_loss.detach())
+                print("other_loss_detached", other_loss_detached)
+                print(name_other)
+                raise ValueError()
 
         weighted_loss = weight * other_loss
         self.regularization_loses[name_other] = weighted_loss
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
+            assert self.acc_loss.item() >= 0, "The loss appears to be negative."
             if self.acc_loss.item() == 0:
                 warnings.warn("Skipping losses_weighted_{} as acc_loss == 0".format(name_other))
             else:
                 add_to_visualize(weighted_loss.mean().item() / self.acc_loss.item(),
                                  "losses_weighted_{}".format(name_other),
                                  additional)
+
+            if weighted_loss.mean().item() < 0:
+                print("weighted_loss", weighted_loss)
+            add_to_visualize(weighted_loss.mean().item(),
+                             "losses_clamp_{}".format(name_other),
+                             additional)
 
             add_to_visualize(other_loss.mean().item(),
                              "losses_{}".format(name_other),
