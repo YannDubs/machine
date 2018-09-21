@@ -209,7 +209,6 @@ class Loss(object):
         """
         if type(self.acc_loss) is int:
             raise ValueError("No loss to back propagate.")
-
         total_loss = self._apply_regularization_losses()
         total_loss.backward(retain_graph=retain_graph)
 
@@ -258,25 +257,60 @@ class Loss(object):
             weight = (max_loss / other_loss_detached).clamp(max=1.)
             weight[torch.isnan(weight)] = 1.
 
-        weighted_loss = (weight * other_loss).mean()
+        weighted_loss = weight * other_loss
         self.regularization_loses[name_other] = weighted_loss
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
             if self.acc_loss.item() == 0:
-                warnings.warn("Skipping losses_weighted as acc_loss == 0")
+                warnings.warn("Skipping losses_weighted_{} as acc_loss == 0".format(name_other))
             else:
                 additional["visualize"]["losses_weighted_{}".format(name_other)
-                                        ] = weighted_loss.item() / self.acc_loss.item()
+                                        ] = weighted_loss.mean().item() / self.acc_loss.item()
             additional["visualize"]["losses_{}".format(name_other)
                                     ] = other_loss.mean().item()
         # # # # # # # # # # # # # # #
 
+    def balance_regularization_losses(self, pos_perc=None, additional=None):
+        """
+        Adds / Remove some pos_perc loss in order to compensate the regularization
+        that has been added for the positional or content attention. I.e
+        the positional or content regularization should only help for convergence of
+        one of the attentions and should not push the network to use one type of
+        attention.
+
+        SHOULD NOT BE HERE!!!
+        """
+        if pos_perc is not None:
+            # this represents how much penalty the network gets that pushes
+            # it towards using content (can be negative)
+            penalty_pos = 0
+            for name, loss in self.regularization_loses.items():
+                if name.startswith("pos_"):
+                    penalty_pos += loss.detach()
+                elif name.startswith("cont_"):
+                    penalty_pos -= loss.detach()
+
+            # detaching so backprop on pos perc
+            self.regularization_loses["balance"] = - penalty_pos * pos_perc / pos_perc.detach()
+
+        # # # # # DEV MODE # # # # #
+        if additional is not None:
+            if self.acc_loss.item() == 0:
+                warnings.warn("Skipping losses_weighted_balance as acc_loss == 0")
+            else:
+                additional["visualize"]["losses_weighted_balance"
+                                        ] = self.regularization_loses["balance"].mean().item() / self.acc_loss.item()
+            additional["visualize"]["losses_balance"
+                                    ] = self.regularization_loses["balance"].mean().item()
+        # # # # # # # # # # # # # # #
+
     def _apply_regularization_losses(self):
         """Use the stored regularization losses."""
+
         total_loss = self.acc_loss + sum(self.regularization_loses.values())
 
-        return total_loss
+        return total_loss.mean()
 
     def update_weights(self, new_weights):
         """Update the weight of the loss of certain tokens.

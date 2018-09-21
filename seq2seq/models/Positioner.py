@@ -117,10 +117,6 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        default=0,
                                                        mode="linear")
     print("pos%:", max_p_interpolators["pos%"].extra_repr())
-
-    # used for balancing, don't rescale
-    max_p_interpolators["balancing"] = None
-    print("balancing%:", max_p_interpolators["balancing"])
     print()
 
     return max_p_interpolators
@@ -910,14 +906,18 @@ class AttentionMixer(nn.Module):
         add_to_test(position_perc, "position_percentage", additional, self.is_dev_mode)
 
         if "losses" in additional:
+            mean_pos_perc = batch_reduction_f(position_perc, torch.mean)
+
             if self.is_reg_pos_perc:
                 # if can solve with positioning pleas do
-                loss = 1 - batch_reduction_f(position_perc, torch.mean)
+                loss = 1 - mean_pos_perc
                 add_regularization(loss, "pos%", additional)
 
             self._rescale_losses(additional["losses"], position_perc)
-            additional["losses"]["balancing"] = -self._balance_losses(additional["losses"],
-                                                                      position_perc)
+
+            # will be used for balancing (i.e not pushing towards one type of attn
+            # if components of other are regularized)
+            additional["pos_perc"] = mean_pos_perc.view(-1)
 
         # COnvex combination
         attn = (pos_attn * position_perc.unsqueeze(-1) +
@@ -938,26 +938,3 @@ class AttentionMixer(nn.Module):
                 losses[name] = losses[name] * position_perc
             elif name.startswith("cont_"):
                 losses[name] = losses[name] * (1 - position_perc)
-
-    def _balance_losses(self, losses, position_perc):
-        """
-        Adds / Remove some pos_perc loss in order to compensate the regularization
-        that has been added for the positional or content attention. I.e
-        the positional or content regularization should only help for convergence of
-        one of the attentions and should not push the network to use one type of
-        attention.
-        """
-        # don't broadcast multiplication : want vector output
-        position_perc = position_perc.view(-1)
-
-        diff_pos_cont_loss = 0
-        for name, loss in losses.items():
-            if name.startswith("pos_"):
-                diff_pos_cont_loss += loss.detach()
-            elif name.startswith("cont_"):
-                diff_pos_cont_loss -= loss.detach()
-
-        # this represents how much the network will be penalized by using
-        # psoitional attn (can be negative)
-        penalty_use_pos = diff_pos_cont_loss * position_perc
-        return penalty_use_pos

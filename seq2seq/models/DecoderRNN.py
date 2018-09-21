@@ -337,7 +337,7 @@ class DecoderRNN(BaseRNN):
                 source_lengths=None,
                 additional=None,
                 confusers=dict(),
-                additional_to_store=["test", "visualize", "losses"]):
+                additional_to_store=["test", "visualize", "losses", "pos_perc"]):
 
         def store_additional(additional, ret_dict, additional_to_store,
                              is_multiple_call=False):
