@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch
 import numpy as np
 
-from seq2seq.util.helpers import HyperparameterInterpolator, Rate2Steps
+from seq2seq.util.helpers import HyperparameterInterpolator, Rate2Steps, add_to_visualize
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -302,10 +302,11 @@ class Loss(object):
             if self.acc_loss.item() == 0:
                 warnings.warn("Skipping losses_weighted_balance as acc_loss == 0")
             else:
-                additional["visualize"]["losses_weighted_balance"
-                                        ] = self.regularization_loses["balance"].mean().item() / self.acc_loss.item()
-            additional["visualize"]["losses_balance"
-                                    ] = self.regularization_loses["balance"].mean().item()
+                add_to_visualize(self.regularization_loses["balance"].mean().item() /
+                                 self.acc_loss.item(),
+                                 "losses_weighted_balance", additional)
+            add_to_visualize(self.regularization_loses["balance"].mean().item(),
+                             "losses_balance", additional)
         # # # # # # # # # # # # # # #
 
     def _apply_regularization_losses(self):
@@ -413,7 +414,7 @@ class Perplexity(NLLLoss):
         nll = super(Perplexity, self).get_loss()
         nll /= self.norm_term.item()
         if nll > Perplexity._MAX_EXP:
-            print("WARNING: Loss exceeded maximum value, capping to e^100")
+            warnings.warn("Loss exceeded maximum value, capping to e^100")
             return math.exp(Perplexity._MAX_EXP)
         return math.exp(nll)
 

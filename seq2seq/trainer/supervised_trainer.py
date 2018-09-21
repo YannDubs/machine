@@ -96,6 +96,10 @@ class SupervisedTrainer(object):
                                                        target_variable,
                                                        teacher_forcing_ratio=self.teacher_forcing(True),
                                                        confusers=confusers)
+        # # # # # DEV MODE # # # # #
+        # to visualize correctly balance
+        other["training_step"] = model.training_step
+        # # # # # # # # # # # # # # #
 
         losses = self.evaluator.compute_batch_loss(decoder_outputs,
                                                    decoder_hidden,
@@ -234,6 +238,7 @@ class SupervisedTrainer(object):
                             scalar_v = v
                         other_single_epoch["visualize"][k] = (sum_previous_values + scalar_v
                                                               ) / (i_visualized + 1)
+
                     i_visualized += 1
                 # # # # # # # # # # #
 

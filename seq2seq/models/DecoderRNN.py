@@ -782,7 +782,7 @@ class DecoderRNN(BaseRNN):
         if self.is_dev_mode:
             additional["test"] = additional.get("test", dict())
 
-        if self.is_viz_train:
+        if self.is_viz_train and self.training:
             additional["visualize"] = additional.get("visualize", dict())
 
         if self.training:
