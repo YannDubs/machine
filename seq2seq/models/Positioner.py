@@ -806,6 +806,7 @@ class AttentionMixer(nn.Module):
                  mode="normalized_pos_conf",
                  is_dev_mode=False,
                  n_steps_wait=0,  # TO DOC
+                 default_pos_perc=0.5,  # TO DOC
                  is_reg_pos_perc=False,  # TO DOC
                  rounder_perc_kwargs={}):    # TO DOC
         super(AttentionMixer, self).__init__()
@@ -813,6 +814,7 @@ class AttentionMixer(nn.Module):
         self.is_dev_mode = is_dev_mode
         self.mode = mode.lower()
         self.n_steps_wait = n_steps_wait
+        self.default_pos_perc = default_pos_perc
         self.is_reg_pos_perc = is_reg_pos_perc
         self.rounder_perc = _get_rounder(**rounder_perc_kwargs)
 
@@ -898,7 +900,7 @@ class AttentionMixer(nn.Module):
             else:
                 raise ValueError("Unkown mode={}".format(self.mode))
         else:
-            position_perc = torch.tensor(0.5).to(device).expand(batch_size, 1)
+            position_perc = torch.tensor(self.default_pos_perc).to(device).expand(batch_size, 1)
 
         if self.rounder_perc is not None:
             position_perc = self.rounder_perc(position_perc)

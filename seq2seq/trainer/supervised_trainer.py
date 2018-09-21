@@ -120,7 +120,7 @@ class SupervisedTrainer(object):
                 pos_perc = other.pop("pos_perc", None)
                 if pos_perc is not None:
                     pos_perc = mean(pos_perc)
-                loss.balance_regularization_losses(pos_perc=pos_perc)
+                loss.balance_regularization_losses(pos_perc=pos_perc, additional=other)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
