@@ -265,10 +265,13 @@ class Loss(object):
             if self.acc_loss.item() == 0:
                 warnings.warn("Skipping losses_weighted_{} as acc_loss == 0".format(name_other))
             else:
-                additional["visualize"]["losses_weighted_{}".format(name_other)
-                                        ] = weighted_loss.mean().item() / self.acc_loss.item()
-            additional["visualize"]["losses_{}".format(name_other)
-                                    ] = other_loss.mean().item()
+                add_to_visualize(weighted_loss.mean().item() / self.acc_loss.item(),
+                                 "losses_weighted_{}".format(name_other),
+                                 additional)
+
+            add_to_visualize(other_loss.mean().item(),
+                             "losses_{}".format(name_other),
+                             additional)
         # # # # # # # # # # # # # # #
 
     def balance_regularization_losses(self, pos_perc=None, additional=None):

@@ -237,6 +237,7 @@ class PositionAttention(nn.Module):
                  is_clamp_mu=True,
                  is_relative_sigma=True,
                  is_force_sigma=False,  # TO DOC
+                 is_learn_sigma_to_conf=False,  # TO DOC
                  # with min_sigma=0.41 the max attention you can have is 0.9073 (and it's prime ;)
                  min_sigma=0.41,
                  # intial_sigma=5 chosen so that high sigma but up to length 50
@@ -270,6 +271,7 @@ class PositionAttention(nn.Module):
         self.is_recursive = is_recursive
         self.positioner = _get_positioner(self.positioning_method)
         self.is_force_sigma = is_force_sigma
+        self.is_learn_sigma_to_conf = is_learn_sigma_to_conf
         self.min_sigma = min_sigma
         self.hard_min_sigma = self.min_sigma / 1.5  # Max mu will be 0.9975
         self.initial_sigma = initial_sigma
@@ -364,15 +366,13 @@ class PositionAttention(nn.Module):
             else:
                 raise ValueError("Unkown `l0_mode = {}`".format(l0_mode))
 
-        """
-        sigma0 = ((self.initial_sigma + self.min_sigma) / 2
-                  if self.n_steps_prepare_pos is None else self.get_sigma.final_value)
+        if self.is_learn_sigma_to_conf:
+            sigma0 = ((self.initial_sigma + self.min_sigma) / 2
+                      if self.n_steps_prepare_pos is None else self.get_sigma.final_value)
 
-
-        self.sigma_to_conf = ProbabilityConverter(activation="hard-sigmoid",
-                                                  fix_point=(- self.min_sigma / 1.5, 1),
-                                                  initial_x=-sigma0)
-        """
+            self.sigma_to_conf = ProbabilityConverter(activation="hard-sigmoid",
+                                                      fix_point=(- self.min_sigma / 1.5, 1),
+                                                      initial_x=-sigma0)
 
         self.mean_attn_olds_factor = Parameter(torch.tensor(0.0))
 
@@ -467,22 +467,21 @@ class PositionAttention(nn.Module):
                                              source_lengths_tensor,
                                              additional)
 
-        """
-        # smaller sigma means more confident => - sigma
-        # -sigma can only be negative but you still want confidence between 0
-        # and 1 so need to shift to right => add only a positive bias
-        # could use relu but for gradient flow use leaky relu
-        pos_confidence = self.sigma_to_conf(-sigma)
-        pos_confidence = pos_confidence.mean(dim=-1)
-        #pos_confidence, _ = pos_attn.max(dim=-1)
-        """
-
-        # was hesitating between max pos_attn and linear_sigma to conf. The former
-        # never went to 0 (so pos% always). The latter went abrubtly to 0 very
-        # quickly so hard to get out. Decided to go with a middle ground
-        min_p = 0.001
-        pos_confidence = torch.exp(-sigma**2 + self.hard_min_sigma**2) * (1 - min_p)
-        pos_confidence = pos_confidence.squeeze(-1)
+        if self.is_learn_sigma_to_conf:
+            # smaller sigma means more confident => - sigma
+            # -sigma can only be negative but you still want confidence between 0
+            # and 1 so need to shift to right => add only a positive bias
+            # could use relu but for gradient flow use leaky relu
+            pos_confidence = self.sigma_to_conf(-sigma)
+            pos_confidence = pos_confidence.mean(dim=-1)
+            #pos_confidence, _ = pos_attn.max(dim=-1)
+        else:
+            # was hesitating between max pos_attn and linear_sigma to conf. The former
+            # never went to 0 (so pos% always). The latter went abrubtly to 0 very
+            # quickly so hard to get out. Decided to go with a middle ground
+            min_p = 0.001
+            pos_confidence = torch.exp(-sigma**2 + self.hard_min_sigma**2) * (1 - min_p)
+            pos_confidence = pos_confidence.squeeze(-1)
 
         # relative sigma after sigma to conf because not fair that cannot be as confident
         if self.is_relative_sigma:
@@ -564,6 +563,7 @@ class PositionAttention(nn.Module):
     def _compute_parameters(self, positioning_inputs, building_blocks, step,
                             source_lengths_tensor, additional):
         """Compute the parameters of the positioning function."""
+
         batch_size = positioning_inputs.size(0)
 
         if self.is_recursive:

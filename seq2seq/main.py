@@ -103,6 +103,7 @@ def get_seq2seq_model(src,
                       rate_init_help=0,  # TO DOC
                       is_relative_sigma=True,
                       is_clamp_mu=True,
+                      is_learn_sigma_to_conf=False,   # TO DOC / OR RM
                       is_force_sigma=False,  # TO DOC / OR RM
                       anneal_min_sigma=0.1,
                       is_building_blocks_mu=True,
@@ -416,6 +417,7 @@ def get_seq2seq_model(src,
                            bb_weights_annealed_noise_kwargs=bb_weights_annealed_noise_kwargs,
                            bb_annealed_noise_kwargs=bb_annealed_noise_kwargs,
                            bb_const_annealed_noise_kwargs=bb_const_annealed_noise_kwargs,
+                           is_learn_sigma_to_conf=is_learn_sigma_to_conf,
                            is_force_sigma=is_force_sigma)
 
     content_kwargs = dict(method=content_method)
