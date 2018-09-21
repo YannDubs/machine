@@ -292,7 +292,10 @@ class Loss(object):
                     penalty_pos -= loss.detach()
 
             # detaching so backprop on pos perc
-            self.regularization_loses["balance"] = - penalty_pos * pos_perc / pos_perc.detach()
+            self.regularization_loses["balance"] = - penalty_pos / pos_perc.detach()
+            nans = torch.isnan(self.regularization_loses["balance"])
+            self.regularization_loses["balance"][nans] = 0.
+            self.regularization_loses["balance"] = self.regularization_loses["balance"] * pos_perc
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
