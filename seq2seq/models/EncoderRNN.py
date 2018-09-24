@@ -7,7 +7,8 @@ from torch.nn.utils.rnn import pad_sequence
 from .baseRNN import BaseRNN
 
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
-from seq2seq.util.helpers import (get_rnn, get_extra_repr, format_source_lengths)
+from seq2seq.util.helpers import (get_rnn, get_extra_repr, format_source_lengths,
+                                  add_to_test)
 from seq2seq.util.torchextend import ProbabilityConverter
 from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
 from seq2seq.util.confuser import get_max_loss_loc_confuser
@@ -258,7 +259,7 @@ class EncoderRNN(BaseRNN):
                                                    mask=mask)
 
         # DEV MODE TO UNDERSTAND CONFUSERS
-        self._add_to_test(keys, "keys", additional)
+        add_to_test(keys, "keys", additional, self.is_dev_mode)
 
         if self.is_value:
             values, additional = self.value_generator(
@@ -310,20 +311,3 @@ class EncoderRNN(BaseRNN):
             additional["visualize"] = additional.get("visualize", dict())
 
         return additional
-
-    def _add_to_test(self, values, keys, additional):
-        """
-        Save a variable to additional["test"] only if dev mode is on. The
-        variables saved should be the interpretable ones for which you want to
-        know the value of during test time.
-
-        Batch size should always be 1 when predicting with dev mode !
-        """
-        if self.is_dev_mode:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_test(v, k, additional)
-            else:
-                if isinstance(values, torch.Tensor):
-                    values = values.detach().cpu()
-                additional["test"][keys] = values

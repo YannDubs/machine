@@ -451,7 +451,7 @@ def batch_reduction_f(x, f, batch_first=True, **kwargs):
     return f(x.view(x.size(0), -1), dim=1, **kwargs)
 
 
-def add_to_visualize(values, keys, additional, save_every_n_batches=15):
+def add_to_visualize(values, keys, additional, is_training, save_every_n_batches=15):
     """Every `save_every` batch, adds a certain variable to the `visualization`
     sub-dictionary of additional. Such variables should be the ones that are
     interpretable, and for which the size is independant of the source length.
@@ -459,15 +459,17 @@ def add_to_visualize(values, keys, additional, save_every_n_batches=15):
 
     The variables will then be averaged over decoding step and over batch_size.
     """
-    if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
-        if isinstance(keys, list):
-            for k, v in zip(keys, values):
-                add_to_visualize(v, k, additional, save_every_n_batches=save_every_n_batches)
-        else:
-            # averages over the batch size
-            if isinstance(values, torch.Tensor):
-                values = values.mean(0).detach().cpu()
-            additional["visualize"][keys] = values
+    if is_training:
+        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
+            if isinstance(keys, list):
+                for k, v in zip(keys, values):
+                    add_to_visualize(v, k, additional, is_training,
+                                     save_every_n_batches=save_every_n_batches)
+            else:
+                # averages over the batch size
+                if isinstance(values, torch.Tensor):
+                    values = values.mean(0).detach().cpu()
+                additional["visualize"][keys] = values
 
 
 def add_to_test(values, keys, additional, is_dev_mode):
@@ -499,3 +501,81 @@ def add_regularization(loss, loss_name, additional, is_visualize=True, **kwargs)
         name = 'losses_{}'.format(loss_name)
         add_to_visualize(loss, name, additional, **kwargs)
     """
+
+
+class SummaryStatistics:
+    """Computes the summary statistics of a vector.
+
+    Args:
+    statistics_name (list, optional): name of the statistics to use. Use "all"
+        instead of a list to use all.
+    """
+
+    def __init__(self, statistics_name=["min", "max", "mean", "median", "std"]):
+        all_stats = ["min", "max", "mean", "geomean", "harmean", "median",
+                     "std", "mad", "skew", "kurtosis", "rms"]
+        if statistics_name == "all":
+            statistics_name = all_stats
+
+        self.statistics_name = statistics_name
+        self.n_statistics = len(self.statistics_name)
+
+    def __call__(self, x):
+        stats = []
+
+        n = x.size(-1)
+        biased_std = torch.std(x, dim=-1, keepdim=True, unbiased=False)
+        mu = torch.mean(x, dim=-1, keepdim=True)
+        median = torch.median(x, dim=-1, keepdim=True)[0]
+
+        if "min" in self.statistics_name:
+            stats.append(torch.min(x, dim=-1, keepdim=True)[0])
+
+        if "max" in self.statistics_name:
+            stats.append(torch.max(x, dim=-1, keepdim=True)[0])
+
+        if "mean" in self.statistics_name:
+            stats.append(mu)
+
+        if "geomean" in self.statistics_name:
+            stats.append(torch.exp(torch.log(x).sum(dim=-1, keepdim=True) / n))
+
+        if "harmean" in self.statistics_name:
+            stats.append((x**2).sum(dim=-1, keepdim=True) * 2**0.5)
+
+        if "median" in self.statistics_name:
+            stats.append(median)
+
+        if "std" in self.statistics_name:
+            if n > 1:
+                stats.append(torch.std(x, dim=-1, keepdim=True))
+            else:
+                stats.append(torch.zeros_like(mu))
+
+        if "mad" in self.statistics_name:
+            stats.append(torch.median(torch.abs(x - median), dim=-1, keepdim=True)[0])
+
+        if "skew" in self.statistics_name:
+            if n > 1:
+                fisher_coef_skew = (((x - mu)**3) / n).sum(dim=-1, keepdim=True) / biased_std**3
+                adjust = ((n * (n - 1))**0.5) / (n - 2) if n > 2 else 1
+                stats.append(adjust * fisher_coef_skew)
+            else:
+                stats.append(torch.zeros_like(mu))
+
+        if "kurtosis" in self.statistics_name:
+            if n > 1:
+                kurtosis = (((x - mu)**4) / n).sum(dim=-1, keepdim=True) / biased_std**4
+                if n > 3:
+                    kurtosis = (n - 1) / ((n - 2) * (n - 3)) * ((n + 1) * kurtosis + 6)
+                stats.append(kurtosis)
+            else:
+                stats.append(torch.zeros_like(mu))
+
+        if "rms" in self.statistics_name:
+            stats.append((x**2).sum(dim=-1, keepdim=True) * 2**0.5)
+
+        if "logsumexp" in self.statistics_name:
+            stats.append(torch.logsumexp(x, dim=-1, keepdim=True))
+
+        return torch.cat(stats, dim=-1)

@@ -132,8 +132,8 @@ class SupervisedTrainer(object):
         self.optimizer.step()
         model.zero_grad()
 
-        for _, confuser in confusers.items():
-            confuser()
+        for name, confuser in confusers.items():
+            confuser(additional=other, name=name)
 
         model.zero_grad()
 

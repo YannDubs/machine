@@ -706,7 +706,7 @@ class DecoderRNN(BaseRNN):
 
             add_to_visualize([content_confidence, additional["mean_content"]],
                              ["content_confidence", "mean_content"],
-                             additional)
+                             additional, self.training)
             add_to_test(content_attn, "content_attention", additional, self.is_dev_mode)
 
         if self.is_position_attn:
@@ -738,13 +738,7 @@ class DecoderRNN(BaseRNN):
 
             attn = pos_attn
 
-            add_to_visualize([mu, sigma, pos_confidence],
-                             ["mu", "sigma", "pos_confidence"],
-                             additional)
-
-            add_to_test([pos_attn, mu, sigma],
-                        ["position_attention", "mu", "sigma"],
-                        additional, self.is_dev_mode)
+            add_to_test(pos_attn, "position_attention", additional, self.is_dev_mode)
 
         if self.is_content_attn and self.is_position_attn:
             attn, pos_perc = self.mix_attention(controller_output,
@@ -757,7 +751,6 @@ class DecoderRNN(BaseRNN):
                                                 additional)
 
             additional["position_percentage"] = pos_perc
-            add_to_visualize(pos_perc, "position_percentage", additional)
 
             add_to_test([pos_confidence], ["pos_confidence"], additional, self.is_dev_mode)
             if self.mix_attention.mode != "pos_conf":
@@ -771,7 +764,7 @@ class DecoderRNN(BaseRNN):
 
         add_to_visualize([additional["mean_attn"], step],
                          ["mean_attn", "step"],
-                         additional)
+                         additional, self.training)
 
         return context, attn
 

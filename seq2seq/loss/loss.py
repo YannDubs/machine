@@ -216,6 +216,8 @@ class Loss(object):
         """ Scale loss with a factor
         """
         self.acc_loss = self.acc_loss * factor
+        if self.acc_loss.item() < 0:
+            raise ValueError("The loss appears to be negative loss={}. factor={}".format(self.acc_loss.item()), factor)
 
     def store_regularization_loss(self, name_other, other_loss,
                                   weight=None,
@@ -256,35 +258,24 @@ class Loss(object):
             # only scale ifother_loss_detached >  max_loss
             weight = (max_loss / other_loss_detached).clamp(max=1.)
             weight[torch.isnan(weight)] = 1.
-            if any(weight < 0):
-                print("max_proportion", max_proportion)
-                print("self.acc_loss.detach()", self.acc_loss.detach())
-                print("other_loss_detached", other_loss_detached)
-                print(name_other)
-                raise ValueError()
 
         weighted_loss = weight * other_loss
         self.regularization_loses[name_other] = weighted_loss
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
-            assert self.acc_loss.item() >= 0, "The loss appears to be negative."
-            if self.acc_loss.item() == 0:
+            if self.acc_loss.item() < 0:
+                raise ValueError("The loss appears to be negative loss={}.".format(self.acc_loss.item()))
+            elif self.acc_loss.item() == 0:
                 warnings.warn("Skipping losses_weighted_{} as acc_loss == 0".format(name_other))
             else:
                 add_to_visualize(weighted_loss.mean().item() / self.acc_loss.item(),
                                  "losses_weighted_{}".format(name_other),
-                                 additional)
-
-            if weighted_loss.mean().item() < 0:
-                print("weighted_loss", weighted_loss)
-            add_to_visualize(weighted_loss.mean().item(),
-                             "losses_clamp_{}".format(name_other),
-                             additional)
+                                 additional, is_training=True)
 
             add_to_visualize(other_loss.mean().item(),
                              "losses_{}".format(name_other),
-                             additional)
+                             additional, is_training=True)
         # # # # # # # # # # # # # # #
 
     def balance_regularization_losses(self, pos_perc=None, additional=None):
@@ -315,14 +306,16 @@ class Loss(object):
 
         # # # # # DEV MODE # # # # #
         if additional is not None:
-            if self.acc_loss.item() == 0:
+            if self.acc_loss.item() < 0:
+                raise ValueError("The loss appears to be negative loss={}.".format(self.acc_loss.item()))
+            elif self.acc_loss.item() == 0:
                 warnings.warn("Skipping losses_weighted_balance as acc_loss == 0")
             else:
                 add_to_visualize(self.regularization_loses["balance"].mean().item() /
                                  self.acc_loss.item(),
-                                 "losses_weighted_balance", additional)
+                                 "losses_weighted_balance", additional, is_training=True)
             add_to_visualize(self.regularization_loses["balance"].mean().item(),
-                             "losses_balance", additional)
+                             "losses_balance", additional, is_training=True)
         # # # # # # # # # # # # # # #
 
     def _apply_regularization_losses(self):
@@ -398,6 +391,8 @@ class NLLLoss(Loss):
         outputs = step_outputs.contiguous().view(batch_size, -1)
         self.acc_loss += self.criterion(outputs, target)
         self.norm_term += 1
+        if self.acc_loss.item() < 0:
+            raise ValueError("The loss appears to be negative loss={}. Added:{}".format(self.acc_loss.item()), self.criterion(outputs, target))
 
 
 class Perplexity(NLLLoss):
@@ -425,6 +420,8 @@ class Perplexity(NLLLoss):
             self.norm_term += np.prod(target.size())
         else:
             self.norm_term += target.data.ne(self.ignore_index).sum()
+        if self.acc_loss.item() < 0:
+            raise ValueError("The loss appears to be negative loss={}. Added:{}".format(self.acc_loss.item()), self.criterion(outputs, target))
 
     def get_loss(self):
         nll = super(Perplexity, self).get_loss()
@@ -455,3 +452,5 @@ class AttentionLoss(NLLLoss):
         outputs = torch.log(step_outputs.contiguous().view(batch_size, -1).clamp(min=1e-20))
         self.acc_loss += self.criterion(outputs, step_target)
         self.norm_term += 1
+        if self.acc_loss.item() < 0:
+            raise ValueError("The loss appears to be negative loss={}. Added:{}".format(self.acc_loss.item()), self.criterion(outputs, target))

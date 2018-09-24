@@ -483,6 +483,14 @@ class PositionAttention(nn.Module):
             pos_confidence = torch.exp(-sigma**2 + self.hard_min_sigma**2) * (1 - min_p)
             pos_confidence = pos_confidence.squeeze(-1)
 
+        add_to_visualize([mu, sigma, pos_confidence],
+                         ["mu", "sigma", "pos_confidence"],
+                         additional, self.training)
+
+        add_to_test([mu, sigma],
+                    ["mu", "sigma"],
+                    additional, self.is_dev_mode)
+
         # relative sigma after sigma to conf because not fair that cannot be as confident
         if self.is_relative_sigma:
             sigma = renormalize_input_length(sigma, source_lengths_tensor, 1)
@@ -709,7 +717,7 @@ class PositionAttention(nn.Module):
 
             add_to_visualize([mu_weights, building_blocks],
                              ['mu_weights', 'building_blocks'],
-                             additional)
+                             additional, self.training)
 
             if self.is_l0_bb_weights:
                 if self.l0_mode == "basic":
@@ -822,7 +830,7 @@ class AttentionMixer(nn.Module):
 
         # should be under if not is_predict_conf (i.e net else)
         # but keeping while testing `additional_controller_features`
-        self.position_perc0 = Parameter(torch.tensor(0.5))
+        self.position_perc0 = Parameter(torch.tensor(self.default_pos_perc))
 
         if self.mode == "generated":
             if is_mlps:
@@ -843,7 +851,7 @@ class AttentionMixer(nn.Module):
 
     def reset_parameters(self):
         self.apply(weights_init)
-        self.position_perc0 = Parameter(torch.tensor(0.5))
+        self.position_perc0 = Parameter(torch.tensor(self.default_pos_perc))
 
     def extra_repr(self):
         return get_extra_repr(self,
@@ -906,6 +914,7 @@ class AttentionMixer(nn.Module):
             position_perc = self.rounder_perc(position_perc)
 
         add_to_test(position_perc, "position_percentage", additional, self.is_dev_mode)
+        add_to_visualize(position_perc, "position_percentage", additional, self.training)
 
         if "losses" in additional:
             mean_pos_perc = batch_reduction_f(position_perc, torch.mean)

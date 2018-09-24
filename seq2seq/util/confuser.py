@@ -9,7 +9,8 @@ from seq2seq.optim import Optimizer
 from seq2seq.util.torchextend import MLP
 from seq2seq.util.initialization import linear_init
 from seq2seq.util.helpers import (modify_optimizer_grads, clamp, batch_reduction_f,
-                                  HyperparameterInterpolator)
+                                  HyperparameterInterpolator, add_to_visualize,
+                                  SummaryStatistics)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -49,8 +50,14 @@ class Confuser(object):
                  optim="adam",  # TO DOC
                  final_factor=1.07,  # TO DOC
                  n_steps_interpolate=0,  # TO DOC
+                 is_anticyclic=True,  # TO DOC
                  factor_kwargs={},  # TO DOC
                  **kwargs):
+        self.is_anticyclic = is_anticyclic
+        if self.is_anticyclic:
+            self.summary_stats = SummaryStatistics(statistics_name="all")
+            input_size = input_size + self.summary_stats.n_statistics
+
         self.discriminator_criterion = discriminator_criterion
         self.generator_criterion = (generator_criterion if generator_criterion is not None
                                     else discriminator_criterion)
@@ -159,6 +166,8 @@ class Confuser(object):
     def _compute_1_loss(self, criterion, inputs, targets, seq_len, max_losses,
                         mask, is_multi_call):
         """Computes one single loss."""
+        if self.is_anticyclic:
+            inputs = torch.cat((inputs, self.summary_stats(inputs)), dim=-1)
         outputs = self.discriminator(inputs)
 
         if targets is None:
@@ -232,7 +241,7 @@ class Confuser(object):
                                                          seq_len, max_losses, mask,
                                                          is_multi_call)
 
-    def __call__(self, main_loss=None, **kwargs):
+    def __call__(self, main_loss=None, additional=None, name="", **kwargs):
         """
         Computes the gradient of the generator parameters to minimize the
         confuing loss and of the discriminator parameters to maximize the same
@@ -241,6 +250,7 @@ class Confuser(object):
         Note:
             Should call model.zero_grad() at the end to be sure that clean slate.
         """
+
         # GENERATOR
         # something to backprop ?
         if self.to_backprop_generator is not None and bool(self.to_backprop_generator.any()):
@@ -253,6 +263,17 @@ class Confuser(object):
             generator_loss = -1 * generator_losses.mean()
             generator_loss = self._scale_generator_loss(generator_loss, main_loss)
 
+            # # # # # DEV MODE # # # # #
+            if additional is not None:
+                add_to_visualize(generator_losses.mean().item(),
+                                 "losses_generator_{}".format(name),
+                                 additional, is_training=True)
+
+                add_to_visualize(generator_loss.item(),
+                                 "losses_weighted_generator_{}".format(name),
+                                 additional, is_training=True)
+            # # # # # # # # # # # # # # #
+
             # has to retain graph to not recompute all
             generator_loss.backward(retain_graph=True)
             self.generator_optim.step()
@@ -262,6 +283,13 @@ class Confuser(object):
 
         # DISCRIMINATOR
         discriminator_loss = self.discriminator_losses.mean()
+
+        # # # # # DEV MODE # # # # #
+        if additional is not None:
+            add_to_visualize(discriminator_loss.item(),
+                             "losses_discriminator_{}".format(name),
+                             additional, is_training=True)
+        # # # # # # # # # # # # # # #
 
         discriminator_loss.backward(**kwargs)
         self.discriminator_optim.step()
