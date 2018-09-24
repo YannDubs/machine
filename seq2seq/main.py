@@ -521,7 +521,9 @@ def train(train_path,
           rate_prepare_pos=0.05,  # DEV MODE : TO DOC
           is_confuse_eos=False,  # DEV MODE : TO DOC
           is_confuse_key=False,  # DEV MODE : TO DOC
+          key_generator_criterion="l05",  # DEV MODE : TO DOC
           is_confuse_query=False,  # DEV MODE : TO DOC
+          query_generator_criterion="l05",  # DEV MODE : TO DOC
           confuser_optim="adam",  # DEV MODE : TO DOC
           plateau_reduce_lr=[4, 0.5],  # DEV MODE : TO DOC
           _initial_model="initial_model",
@@ -710,10 +712,13 @@ def train(train_path,
     if is_confuse_key:
         # don't confuse the whole model, only the key generator
         generator = seq2seq.encoder.key_generator
-
+        if key_generator_criterion == "l05":
+            generator_criterion = _l05loss
+        elif key_generator_criterion == "l1":
+            generator_criterion = nn.L1Loss(reduction="none")
         confusers["key_confuser"] = Confuser(nn.L1Loss(reduction="none"),
                                              seq2seq.encoder.key_size + 1,  # will add n
-                                             generator_criterion=_l05loss,
+                                             generator_criterion=generator_criterion,
                                              target_size=1,
                                              n_steps_discriminate_only=rate2steps(0.05),
                                              generator=generator,
@@ -723,10 +728,13 @@ def train(train_path,
     if is_confuse_query:
         # don't confuse the whole model, only the key generator
         generator = seq2seq.decoder.query_generator
-
+        if query_generator_criterion == "l05":
+            generator_criterion = _l05loss
+        elif query_generator_criterion == "l1":
+            generator_criterion = nn.L1Loss(reduction="none")
         confusers["query_confuser"] = Confuser(nn.L1Loss(reduction="none"),
                                                seq2seq.decoder.query_size + 1,  # will add n
-                                               generator_criterion=_l05loss,
+                                               generator_criterion=generator_criterion,
                                                target_size=1,
                                                n_steps_discriminate_only=rate2steps(0.05),
                                                generator=generator,
