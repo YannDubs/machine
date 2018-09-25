@@ -108,6 +108,7 @@ def get_seq2seq_model(src,
                       anneal_min_sigma=0.1,
                       is_building_blocks_mu=True,
                       is_bb_bias=True,
+                      is_old_content=False,  # TO DOC
                       is_sequential_attn=False,
                       is_reg_bb_weights=False,
                       is_reg_const_weights=False,  # TO DOC / DEV MODE

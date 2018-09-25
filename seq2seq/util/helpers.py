@@ -507,25 +507,33 @@ class SummaryStatistics:
     """Computes the summary statistics of a vector.
 
     Args:
-    statistics_name (list, optional): name of the statistics to use. Use "all"
-        instead of a list to use all.
+        statistics_name ({list,"all","pos"}, optional): name of the statistics to
+            use. Use "all" instead of a list to use all functions that are defined
+            for any values of xi's. Use "pos" to use all functions plus the ones
+            that are only defined for stricly positive xi's.
     """
 
-    def __init__(self, statistics_name=["min", "max", "mean", "median", "std"]):
-        all_stats = ["min", "max", "mean", "geomean", "harmean", "median",
-                     "std", "mad", "skew", "kurtosis", "rms"]
+    def __init__(self, statistics_name=["min", "max", "mean", "median"]):
+        all_stats = ["min", "max", "mean", "median", "std", "mad", "skew",
+                     "kurtosis", "rms", "logsumexp", "absmean"]
+        pos_stats = ["min", "max", "mean", "median", "std", "mad", "skew",
+                     "kurtosis", "rms", "logsumexp", "absmean", "gmean", "hmean"]
         if statistics_name == "all":
             statistics_name = all_stats
+        elif statistics_name == "positive":
+            statistics_name = pos_stats
 
         self.statistics_name = statistics_name
         self.n_statistics = len(self.statistics_name)
+
+        self.std = ExtendedStd()
+        self.skew = ExtendedSkewness()
+        self.kurtosis = ExtendedKurtosis()
 
     def __call__(self, x):
         stats = []
 
         n = x.size(-1)
-        biased_std = torch.std(x, dim=-1, keepdim=True, unbiased=False)
-        mu = torch.mean(x, dim=-1, keepdim=True)
         median = torch.median(x, dim=-1, keepdim=True)[0]
 
         if "min" in self.statistics_name:
@@ -535,47 +543,117 @@ class SummaryStatistics:
             stats.append(torch.max(x, dim=-1, keepdim=True)[0])
 
         if "mean" in self.statistics_name:
-            stats.append(mu)
-
-        if "geomean" in self.statistics_name:
-            stats.append(torch.exp(torch.log(x).sum(dim=-1, keepdim=True) / n))
-
-        if "harmean" in self.statistics_name:
-            stats.append((x**2).sum(dim=-1, keepdim=True) * 2**0.5)
+            stats.append(torch.mean(x, dim=-1, keepdim=True))
 
         if "median" in self.statistics_name:
             stats.append(median)
 
         if "std" in self.statistics_name:
-            if n > 1:
-                stats.append(torch.std(x, dim=-1, keepdim=True))
-            else:
-                stats.append(torch.zeros_like(mu))
+            stats.append(self.std(x, dim=-1, keepdim=True))
 
         if "mad" in self.statistics_name:
             stats.append(torch.median(torch.abs(x - median), dim=-1, keepdim=True)[0])
 
+        if "rms" in self.statistics_name:
+            rms = torch.norm(x, p=2, dim=-1, keepdim=True) / (n**0.5)
+            stats.append(rms)
+
+        if "absmean" in self.statistics_name:
+            absolute_mean = torch.norm(x, p=1, dim=-1, keepdim=True) / n
+            stats.append(absolute_mean)
+
         if "skew" in self.statistics_name:
-            if n > 1:
-                fisher_coef_skew = (((x - mu)**3) / n).sum(dim=-1, keepdim=True) / biased_std**3
-                adjust = ((n * (n - 1))**0.5) / (n - 2) if n > 2 else 1
-                stats.append(adjust * fisher_coef_skew)
-            else:
-                stats.append(torch.zeros_like(mu))
+            stats.append(self.skew(x, dim=-1, keepdim=True))
 
         if "kurtosis" in self.statistics_name:
-            if n > 1:
-                kurtosis = (((x - mu)**4) / n).sum(dim=-1, keepdim=True) / biased_std**4
-                if n > 3:
-                    kurtosis = (n - 1) / ((n - 2) * (n - 3)) * ((n + 1) * kurtosis + 6)
-                stats.append(kurtosis)
-            else:
-                stats.append(torch.zeros_like(mu))
-
-        if "rms" in self.statistics_name:
-            stats.append((x**2).sum(dim=-1, keepdim=True) * 2**0.5)
+            stats.append(self.kurtosis(x, dim=-1, keepdim=True))
 
         if "logsumexp" in self.statistics_name:
             stats.append(torch.logsumexp(x, dim=-1, keepdim=True))
 
+        if "gmean" in self.statistics_name:
+            if torch.any(x <= 0):
+                raise ValueError("Geometric mean only implemented if all elements greater than zero")
+            geometric_mean = torch.exp(torch.log(x).mean(dim=-1, keepdim=True))
+            stats.append(geometric_mean)
+
+        if "hmean" in self.statistics_name:
+            if torch.any(x <= 0):
+                raise ValueError("Harmonic mean only defined if all elements greater than zero")
+            harmonic_mean = n / (1.0 / x).sum(dim=-1, keepdim=True)
+            stats.append(harmonic_mean)
+
         return torch.cat(stats, dim=-1)
+
+
+def is_constant(x):
+    """Whether a tensor has all teh same values."""
+    return torch.any(x == x[0])
+
+
+class ExtendedStd(nn.Module):
+    """
+    Generalizes the standard deviation function by extending it through limits
+    at the point x = 0, with dx=0.
+    """
+
+    def __init__(self):
+        super(ExtendedStd, self).__init__()
+        self.register_backward_hook(mask_infinite_backward_hook)
+
+    def forward(self, x, dim=-1, unbiased=True, **kwargs):
+        if x.size(dim) == 1:
+            # division by 0 if unbiaised with sinle sample
+            unbiased = False
+        return torch.std(x, dim=dim, unbiased=unbiased, **kwargs)
+
+
+class ExtendedSkewness(nn.Module):
+    """
+    Generalizes the skewness function by extending it through limits
+    at the point x = 0, with dx=0.
+    """
+
+    def __init__(self):
+        super(ExtendedSkewness, self).__init__()
+        self.std = ExtendedStd()
+        self.register_backward_hook(mask_infinite_backward_hook)
+
+    def forward(self, x, dim=-1, keepdim=False, **kwargs):
+        n = x.size(dim)
+        biased_std = self.std(x, dim=dim, unbiased=True, keepdim=keepdim)
+        mu = torch.mean(x, dim=dim, keepdim=keepdim)
+        mask_not_zero = (~(biased_std == 0)).float()
+        biased_std = (1 - mask_not_zero) + biased_std
+        fisher_coef_skew = ((x - mu)**3).mean(dim=-1, keepdim=True) / biased_std**3
+        adjust = ((n * (n - 1))**0.5) / (n - 2) if n > 2 else 1
+        return adjust * fisher_coef_skew * mask_not_zero
+
+
+class ExtendedKurtosis(nn.Module):
+    """
+    Generalizes the skewness function by extending it through limits
+    at the point x = 0, with dx=0.
+    """
+
+    def __init__(self):
+        super(ExtendedKurtosis, self).__init__()
+        self.std = ExtendedStd()
+        self.register_backward_hook(mask_infinite_backward_hook)
+
+    def forward(self, x, dim=-1, keepdim=False, **kwargs):
+        n = x.size(dim)
+        biased_std = self.std(x, dim=dim, unbiased=True, keepdim=keepdim)
+        mu = torch.mean(x, dim=dim, keepdim=keepdim)
+        mask_not_zero = (~(biased_std == 0)).float()
+        biased_std = (1 - mask_not_zero) + biased_std
+        kurtosis = ((x - mu)**4).mean(dim=-1, keepdim=True) / biased_std**4
+        if n > 3:
+            kurtosis = (n - 1) / ((n - 2) * (n - 3)) * ((n + 1) * kurtosis + 6)
+        return kurtosis * mask_not_zero
+
+
+def mask_infinite_backward_hook(self, grad_input, grad_output):
+    mask_new_infinite = ~torch.isfinite(grad_input[0]) & torch.isfinite(grad_output[0])
+    grad_input0 = grad_input[0].masked_fill(mask_new_infinite, 0.0)
+    return (grad_input0, ) + tuple(gi for gi in grad_input[1:])

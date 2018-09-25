@@ -696,6 +696,7 @@ class DecoderRNN(BaseRNN):
                                                                       keys,
                                                                       additional,
                                                                       **content_method_kwargs)
+
             attn = content_attn
 
             additional["content_confidence"] = content_confidence
@@ -719,8 +720,8 @@ class DecoderRNN(BaseRNN):
             else:
                 mean_attn_old = additional["mean_attn"]
 
-                if not self.is_old_content:
-                    mean_content_old = additional["mean_content"]
+            if not self.is_old_content:
+                mean_content_old = additional["mean_content"]
 
             pos_attn, pos_confidence, mu, sigma = self.position_attention(controller_output,
                                                                           source_lengths,

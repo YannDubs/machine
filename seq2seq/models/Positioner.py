@@ -746,7 +746,7 @@ class PositionAttention(nn.Module):
             mu = torch.sigmoid(mu_weights.unsqueeze(1))
 
         if self.is_clamp_mu:
-            mu_old = mu
+            mu_old = mu.clone()
             mu = clamp(mu, minimum=0, maximum=1, is_leaky=True)
             if "losses" in additional and self.is_reg_clamp_mu:
                 loss = batch_reduction_f(mu - mu_old,
