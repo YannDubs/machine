@@ -256,7 +256,8 @@ class EncoderRNN(BaseRNN):
                                                    targets=counting_target_i.unsqueeze(-1),
                                                    seq_len=input_lengths_tensor.unsqueeze(-1),
                                                    max_losses=max_losses.unsqueeze(-1),
-                                                   mask=mask)
+                                                   mask=mask,
+                                                   to_summarize_stats=keys)
 
         # DEV MODE TO UNDERSTAND CONFUSERS
         add_to_test(keys, "keys", additional, self.is_dev_mode)

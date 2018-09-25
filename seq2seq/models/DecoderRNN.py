@@ -522,7 +522,8 @@ class DecoderRNN(BaseRNN):
                                                      targets=counting_target_j.unsqueeze(-1),
                                                      seq_len=output_lengths_tensor.unsqueeze(-1),
                                                      max_losses=max_losses.unsqueeze(-1),
-                                                     mask=mask)
+                                                     mask=mask,
+                                                     to_summarize_stats=queries)
 
         if self.is_dev_mode:
             queries = torch.cat(additional["queries"], dim=1)

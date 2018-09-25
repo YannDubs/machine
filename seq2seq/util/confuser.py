@@ -164,9 +164,11 @@ class Confuser(object):
         return generator_loss * scaling_factor
 
     def _compute_1_loss(self, criterion, inputs, targets, seq_len, max_losses,
-                        mask, is_multi_call):
+                        mask, is_multi_call, to_summarize_stats=None):
         """Computes one single loss."""
         if self.is_anticyclic:
+            if to_summarize_stats is None:
+                to_summarize_stats = inputs
             inputs = torch.cat((inputs, self.summary_stats(inputs)), dim=-1)
         outputs = self.discriminator(inputs)
 
@@ -200,7 +202,8 @@ class Confuser(object):
                      seq_len=None,
                      max_losses=None,
                      mask=None,
-                     is_multi_call=False):
+                     is_multi_call=False,
+                     to_summarize_stats=None):  ## TO DOC
         """Computes the loss for the confuser.
 
         inputs (torch.tensor): inputs to the confuser. I.e where you want to remove
@@ -229,7 +232,8 @@ class Confuser(object):
             self.generator_losses = self._compute_1_loss(self.generator_criterion,
                                                          inputs, targets, seq_len,
                                                          max_losses, mask,
-                                                         is_multi_call)
+                                                         is_multi_call,
+                                                         to_summarize_stats)
 
             if max_losses is not None:
                 self.to_backprop_generator = self.generator_losses < max_losses
@@ -239,7 +243,8 @@ class Confuser(object):
         self.discriminator_losses = self._compute_1_loss(self.discriminator_criterion,
                                                          inputs.detach(), targets,
                                                          seq_len, max_losses, mask,
-                                                         is_multi_call)
+                                                         is_multi_call,
+                                                         to_summarize_stats)
 
     def __call__(self, main_loss=None, additional=None, name="", **kwargs):
         """
