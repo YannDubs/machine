@@ -245,8 +245,16 @@ class EncoderRNN(BaseRNN):
             # the bound can get tighter and tighter. Do not use low factor at begining
             # as the discriminator will generate random numbers which could be correct
             # and we don't want to penalize the generator for that.
+            if isinstance(confusers["key_confuser"].generator_criterion, nn.L1Loss):
+                p = 1
+            elif isinstance(confusers["key_confuser"].generator_criterion, nn.MSELoss):
+                p = 2
+            elif confusers["key_confuser"].generator_criterion.__name__ == "_l05loss":
+                p = 0.5
+            else:
+                raise ValueError("Please define p for {}".format(confusers["key_confuser"].generator_criterion))
             max_losses = get_max_loss_loc_confuser(input_lengths_tensor,
-                                                   p=0.5,
+                                                   p=p,
                                                    factor=confusers["key_confuser"
                                                                     ].get_factor(self.training))
 

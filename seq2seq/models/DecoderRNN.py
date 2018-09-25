@@ -511,8 +511,16 @@ class DecoderRNN(BaseRNN):
             # masks everything which finished decoding
             mask = counting_target_j > output_lengths_tensor.unsqueeze(1)
 
+            if isinstance(confusers["query_confuser"].generator_criterion, nn.L1Loss):
+                p = 1
+            elif isinstance(confusers["query_confuser"].generator_criterion, nn.MSELoss):
+                p = 2
+            elif confusers["query_confuser"].generator_criterion.__name__ == "_l05loss":
+                p = 0.5
+            else:
+                raise ValueError("Please define p for {}".format(confusers["key_confuser"].generator_criterion))
             max_losses = get_max_loss_loc_confuser(output_lengths_tensor,
-                                                   p=0.5,
+                                                   p=p,
                                                    factor=confusers["query_confuser"
                                                                     ].get_factor(self.training))
 

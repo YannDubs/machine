@@ -721,10 +721,10 @@ def train(train_path,
                                              seq2seq.encoder.key_size + 1,  # will add n
                                              generator_criterion=generator_criterion,
                                              target_size=1,
-                                             n_steps_discriminate_only=rate2steps(0.05),
+                                             n_steps_discriminate_only=15,
                                              generator=generator,
                                              optim=confuser_optim,
-                                             n_steps_interpolate=rate2steps(.3))
+                                             n_steps_interpolate=rate2steps(0.05))
 
     if is_confuse_query:
         # don't confuse the whole model, only the key generator
@@ -737,10 +737,10 @@ def train(train_path,
                                                seq2seq.decoder.query_size + 1,  # will add n
                                                generator_criterion=generator_criterion,
                                                target_size=1,
-                                               n_steps_discriminate_only=rate2steps(0.05),
+                                               n_steps_discriminate_only=15,
                                                generator=generator,
                                                optim=confuser_optim,
-                                               n_steps_interpolate=rate2steps(.3))
+                                               n_steps_interpolate=rate2steps(0.05))
 
     for _, confuser in confusers.items():
         confuser.to(device)
