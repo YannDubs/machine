@@ -20,7 +20,7 @@ from seq2seq.util.l0 import L0Dense
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
+def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None, is_new_l0=False):
     """Return the interpolators of the regularizers of the positioner.
 
     Args:
@@ -91,14 +91,25 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
                                                        mode="linear")
     print("pos_round_weights:", max_p_interpolators["pos_round_weights"].extra_repr())
 
-    n_steps_interpolate = rate2steps(0.3)
-    start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
-    max_p_interpolators["pos_l0_weights"
-                        ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
-                                                       start_step=start_step,
-                                                       default=0,
-                                                       mode="linear")
-    print("pos_l0_weights:", max_p_interpolators["pos_l0_weights"].extra_repr())
+    if is_new_l0:
+        # DEV MODE
+        n_steps_interpolate = rate2steps(0.3)
+        start_step = rate2steps(0.)
+        max_p_interpolators["pos_l0_weights"
+                            ] = HyperparameterInterpolator(0, 5e-3, n_steps_interpolate,
+                                                           start_step=start_step,
+                                                           default=0,
+                                                           mode="linear")
+        print("pos_l0_weights:", max_p_interpolators["pos_l0_weights"].extra_repr())
+    else:
+        n_steps_interpolate = rate2steps(0.3)
+        start_step = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
+        max_p_interpolators["pos_l0_weights"
+                            ] = HyperparameterInterpolator(3e-2, 5e-3, n_steps_interpolate,
+                                                           start_step=start_step,
+                                                           default=0,
+                                                           mode="linear")
+        print("pos_l0_weights:", max_p_interpolators["pos_l0_weights"].extra_repr())
 
     n_steps_interpolate = n_steps_prepare_pos if is_prepare_pos else rate2steps(0.05)
     start_step = rate2steps(0)
@@ -112,7 +123,7 @@ def get_regularizers_positioner(total_training_calls, n_steps_prepare_pos=None):
     n_steps_interpolate = rate2steps(0.3)
     start_step = rate2steps(0)
     max_p_interpolators["pos%"
-                        ] = HyperparameterInterpolator(1e-2, 5e-2, n_steps_interpolate,
+                        ] = HyperparameterInterpolator(5e-2, 1e-2, n_steps_interpolate,
                                                        start_step=start_step,
                                                        default=0,
                                                        mode="linear")
@@ -372,7 +383,8 @@ class PositionAttention(nn.Module):
 
             self.sigma_to_conf = ProbabilityConverter(activation="hard-sigmoid",
                                                       fix_point=(- self.min_sigma / 1.5, 1),
-                                                      initial_x=-sigma0)
+                                                      initial_x=-sigma0,
+                                                      is_temperature=True)
 
         self.mean_attn_olds_factor = Parameter(torch.tensor(0.0))
 
@@ -668,6 +680,10 @@ class PositionAttention(nn.Module):
                 # adds either 0.5 or -0.5
                 dict_mu_weights["rel_counter_decoder"] = (dict_mu_weights["rel_counter_decoder"] +
                                                           0.5 - (additional["training_step"] % 2))
+                if self.is_bb_bias:
+                    # adds either 0.25 or 0.75
+                    dict_mu_weights["bias"] = (dict_mu_weights["bias"] + 0.5 -
+                                               (0.5 - (additional["training_step"] % 2)) / 2)
 
             # clamping
             if self.is_clamp_weights:
@@ -688,7 +704,7 @@ class PositionAttention(nn.Module):
                                                               is_update=(step == 0 and i == 0))
 
                 if self.is_bb_bias:
-                    # rounds up to 0.25. IS IT NECESSARY ?????????????????
+                    # rounds up to 0.5. IS IT NECESSARY ?????????????????
                     dict_mu_weights["bias"] = self.rounder_weights(dict_mu_weights["bias"] * 2.,
                                                                    is_update=False) / 2.
 

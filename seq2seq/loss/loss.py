@@ -305,7 +305,7 @@ class Loss(object):
             self.regularization_loses["balance"] = self.regularization_loses["balance"] * pos_perc
 
         # # # # # DEV MODE # # # # #
-        if additional is not None:
+        if additional is not None and pos_perc is not None:
             if self.acc_loss.item() < 0:
                 raise ValueError("The loss appears to be negative loss={}.".format(self.acc_loss.item()))
             elif self.acc_loss.item() == 0:

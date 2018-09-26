@@ -71,7 +71,7 @@ def get_seq2seq_model(src,
                       is_highway=False,
                       initial_highway=0.7,
                       is_single_carry=True,
-                      is_additive_highway=True,  # TO DOC
+                      is_additive_highway=True,
                       is_transform_controller=False,
                       is_add_all_controller=True,
                       use_attention="pre-rnn",
@@ -100,18 +100,18 @@ def get_seq2seq_model(src,
                       n_steps_prepare_pos=None,
                       positioning_method="gaussian",
                       is_posrnn=True,
-                      rate_init_help=0,  # TO DOC
+                      rate_init_help=0,
                       is_relative_sigma=True,
                       is_clamp_mu=True,
-                      is_learn_sigma_to_conf=False,   # TO DOC / OR RM
-                      is_force_sigma=False,  # TO DOC / OR RM
+                      is_learn_sigma_to_conf=False,
+                      is_force_sigma=False,  # DEV
                       anneal_min_sigma=0.1,
                       is_building_blocks_mu=True,
                       is_bb_bias=True,
-                      is_old_content=False,  # TO DOC
+                      is_old_content=False,
                       is_sequential_attn=False,
                       is_reg_bb_weights=False,
-                      is_reg_const_weights=False,  # TO DOC / DEV MODE
+                      is_reg_const_weights=False,
                       is_reg_old_weights=False,  # TO DOC / DEV MODE
                       is_reg_clamp_mu=True,  # TO DOC OR EVEN ENFORCE
                       is_reg_round_weights=False,  # TO DOC
@@ -192,6 +192,10 @@ def get_seq2seq_model(src,
             instead of n dimensional. If a n dimension then the network can learn
             to carry some dimensions but not others. The downside is that
             the number of parameters would be larger.
+        is_additive_highway (bool, optional): whether to use a residual connection
+            with a carry weight got th residue. I.e if `True` the carry weight will
+            only be applied to the residue and will not scale the new value with
+            `1-carry`.
         is_transform_controller (bool, optional): whether to pass the hidden activation
             of the encoder through a linear layer before using it as initialization
             of the decoder. This could be useful when using `pre-rnn` attention,
@@ -254,10 +258,17 @@ def get_seq2seq_model(src,
             `laplace` is more human plausible but `gaussian` works best.
         is_posrnn (bool, optional): whether to use a rnn for the positional
             attention generator.
+        rate_init_help (float, optional): percentage of total steps for which to
+            a initializer helper for the position attention. Currently the helper
+            consists of alternating between values of 0.5 and -0.5 for the
+            "rel_counter_decoder" weights.
         is_relative_sigma (bool, optional): whether to use a relative varaince,
             i.e normalized by encoder steps.
         is_clamp_mu (bool, optional): whether to clamp the positioning `mu` in a
-                    range ~[0,1] using a leaky ReLu.
+            range ~[0,1] using a leaky ReLu.
+        is_learn_sigma_to_conf (bool, optional): whether to use a trainable
+            sigma_to_conf converter function. If `True` will use a reverse sigmoid
+            with learnable temperature.
         anneal_min_sigma (float, optional): if not 0 , it will force
             the network to keep a higher sigma while it's learning. min_sigma will
             actually start at `initial_sigma` and will linearly decrease at each
@@ -270,9 +281,21 @@ def get_seq2seq_model(src,
             THis has the advantage of letting the network go to absolut positions
             (ex: middle, end, ...). THe disadvantage being that the model will often
             stop using other building blocks and thus be less general.
-        is_reg_bb_weights (bool, optional): whether to use a l1 regularization
+        is_sequential_attn (bool, optional): whether to force the network to only
+            look at content or position at each step.  Although this is desirable
+            in the long run (first you look for content then positioning not both
+            at the same time), it makes the model a lot less powerful until we
+            start using pondering (i.e be able to look for something without
+            outputing anything, just like humans would).
+        is_reg_bb_weights (bool, optional): whether to use a lp regularization
             on the postional attention mu's building block weights. This can
             be usefull if the building blocks are gihly correlyted.
+        is_reg_const_weights (bool, optional): whether to use a lp regularization
+            on the constant position mu building block. This can be usefull in
+            otrder to push the network to use non constant building blocks that are
+            more extrapolable (i.e with constants, the network has to make varying
+            weights which is not interpretable. If the blocks ae varying then
+            the "hard" extrapolable output would already be done for the network).
 
 
         anneal_bb_weights_noise=0,  # TO DOC ###
@@ -460,6 +483,7 @@ def get_seq2seq_model(src,
                          is_content_attn=is_content_attn,
                          is_position_attn=is_position_attn,
                          is_query=is_query,
+                         is_old_content=is_sequential_attn,
                          content_kwargs=content_kwargs,
                          position_kwargs=position_kwargs,
                          query_kwargs=query_kwargs,
@@ -526,7 +550,10 @@ def train(train_path,
           is_confuse_query=False,  # DEV MODE : TO DOC
           query_generator_criterion="l05",  # DEV MODE : TO DOC
           confuser_optim="adam",  # DEV MODE : TO DOC
+          n_steps_discriminate_only=15,  # DEV MODE
+          n_steps_interpolate_confuser=0.05,  # DEV MODE
           plateau_reduce_lr=[4, 0.5],  # DEV MODE : TO DOC
+          is_new_l0=False,  # Choose best
           _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.
@@ -646,7 +673,8 @@ def train(train_path,
 
     max_p_interpolators = dict()
     max_p_interpolators.update(get_regularizers_positioner(total_training_calls,
-                                                           n_steps_prepare_pos=n_steps_prepare_pos))
+                                                           n_steps_prepare_pos=n_steps_prepare_pos,
+                                                           is_new_l0=is_new_l0))
 
     losses, loss_weights = get_losses(loss_names, tgt, is_predict_eos,
                                       eos_weight=eos_weight,
@@ -721,10 +749,10 @@ def train(train_path,
                                              seq2seq.encoder.key_size + 1,  # will add n
                                              generator_criterion=generator_criterion,
                                              target_size=1,
-                                             n_steps_discriminate_only=15,
+                                             n_steps_discriminate_only=n_steps_discriminate_only,
                                              generator=generator,
                                              optim=confuser_optim,
-                                             n_steps_interpolate=rate2steps(0.05))
+                                             n_steps_interpolate=rate2steps(n_steps_interpolate_confuser))
 
     if is_confuse_query:
         # don't confuse the whole model, only the key generator
@@ -737,10 +765,10 @@ def train(train_path,
                                                seq2seq.decoder.query_size + 1,  # will add n
                                                generator_criterion=generator_criterion,
                                                target_size=1,
-                                               n_steps_discriminate_only=15,
+                                               n_steps_discriminate_only=n_steps_discriminate_only,
                                                generator=generator,
                                                optim=confuser_optim,
-                                               n_steps_interpolate=rate2steps(0.05))
+                                               n_steps_interpolate=rate2steps(n_steps_interpolate_confuser))
 
     for _, confuser in confusers.items():
         confuser.to(device)

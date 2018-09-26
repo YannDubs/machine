@@ -45,13 +45,14 @@ class Confuser(object):
                  generator_criterion=None,
                  hidden_size=32,
                  default_targets=None,
-                 max_scale=0.1,
-                 n_steps_discriminate_only=0,
+                 final_max_scale=5e-2,  # TO DOC annealing
+                 n_steps_discriminate_only=10,
                  optim="adam",  # TO DOC
                  final_factor=1.5,  # TO DOC
                  n_steps_interpolate=0,  # TO DOC
                  is_anticyclic=True,  # TO DOC
                  factor_kwargs={},  # TO DOC
+                 max_scale_kwargs={},  # TO DOC
                  **kwargs):
         self.is_anticyclic = is_anticyclic
         if self.is_anticyclic:
@@ -115,16 +116,25 @@ class Confuser(object):
                                              scheduler=ExponentialLR,
                                              scheduler_kwargs={"gamma": 0.95})
 
-        self.max_scale = max_scale
         self.n_steps_discriminate_only = n_steps_discriminate_only
 
-        self.get_factor = HyperparameterInterpolator(10,
+        initial_factor = 10
+        self.get_factor = HyperparameterInterpolator(initial_factor,
                                                      final_factor,
                                                      n_steps_interpolate,
                                                      mode="geometric",
-                                                     start_step=n_steps_discriminate_only,
-                                                     default=10,
+                                                     start_step=self.n_steps_discriminate_only,
+                                                     default=initial_factor,
                                                      **factor_kwargs)
+
+        initial_max_scale = 0.5
+        self.get_max_scale = HyperparameterInterpolator(initial_max_scale,
+                                                        final_max_scale,
+                                                        n_steps_interpolate,
+                                                        mode="geometric",
+                                                        start_step=self.n_steps_discriminate_only,
+                                                        default=initial_max_scale,
+                                                        **max_scale_kwargs)
 
         self.to_backprop_generator = None
         self.n_training_calls = 0
@@ -153,13 +163,14 @@ class Confuser(object):
         self.to_backprop_generator = None
 
     def _scale_generator_loss(self, generator_loss, main_loss=None):
+        max_scale = self.get_max_scale(True)
         if main_loss is not None:
-            if generator_loss > self.max_scale * main_loss:
-                scaling_factor = (self.max_scale * main_loss / generator_loss).detach()
+            if generator_loss > max_scale * main_loss:
+                scaling_factor = (max_scale * main_loss / generator_loss).detach()
             else:
                 scaling_factor = 1
         else:
-            scaling_factor = self.max_scale
+            scaling_factor = max_scale
 
         return generator_loss * scaling_factor
 

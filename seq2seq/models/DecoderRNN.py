@@ -65,6 +65,13 @@ class DecoderRNN(BaseRNN):
         is_content_attn (bool, optional): whether to use content attention.
         is_position_attn (bool, optional): whether to use positional attention.
         is_query (bool, optional): whether to use a query generator.
+        is_old_content (bool, optional): whether to use the old content instead
+            of the current one in the positioning building blocks. Having it set
+            to `True` removes the possibility of using both attentions together.
+            Although this is desirable in the long run (first you look for content
+            then positioning not both at the same time), it makes the model
+            a lot less powerful until we start using pondering (i.e be able to
+            look for something without outputing anything, just like humans would).
         content_kwargs (dict, optional): additional arguments to the content
             attention generator.
         position_kwargs (dict, optional): additional arguments to the positional
@@ -134,6 +141,7 @@ class DecoderRNN(BaseRNN):
                  is_content_attn=True,
                  is_position_attn=True,
                  is_query=True,
+                 is_old_content=False,
                  content_kwargs={},
                  position_kwargs={},
                  query_kwargs={},
@@ -141,8 +149,7 @@ class DecoderRNN(BaseRNN):
                  embedding_noise_kwargs={},
                  is_dev_mode=False,
                  is_viz_train=False,
-                 is_mid_focus=True,
-                 is_old_content=False):  # TO DOC : Tru should be used when using pondering
+                 is_mid_focus=True):  # TO DOC
 
         super(DecoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p,
