@@ -1,3 +1,7 @@
+"""
+Initialization helper functions
+"""
+
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
@@ -7,7 +11,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def get_activation_name(activation):
-    """Given a string or a `torch.nn.modules.activation` returns the name of the activation."""
+    """Given a string or a `torch.nn.modules.activation` return the name of the activation."""
     if isinstance(activation, str):
         return activation
 
@@ -20,7 +24,8 @@ def get_activation_name(activation):
 
 
 def get_gain(activation):
-    """Given an object of `torch.nn.modules.activation` of an actiavtion name return the correct gain."""
+    """Given an object of `torch.nn.modules.activation` or an activation name
+    return the correct gain."""
     if activation is None:
         return 1
 
@@ -32,8 +37,17 @@ def get_gain(activation):
     return gain
 
 
-def init_param(param, activation=None, is_positive=False, bound=0.05):  # default bound like keras
-    """Initializes some parameters of the model that are not part of an children module."""
+def init_param(param, activation=None, is_positive=False, bound=0.05):
+    """Initialize some parameters of the model that are not part of a children module.
+
+    Args:
+        param (nn.Parameters): parameters to initialize.
+        activation (`torch.nn.modules.activation` or str, optional) activation that
+            will be used on the `param`.
+        is_positive (bool, optional): whether to initilize only with positive values.
+        bound (float, optional): maximum absolute value of the initealized values.
+            By default `0.05` which is keras default uniform bound.
+    """
     gain = get_gain(activation)
     if is_positive:
         return nn.init.uniform_(param, 1e-5, bound * gain)
@@ -42,8 +56,13 @@ def init_param(param, activation=None, is_positive=False, bound=0.05):  # defaul
 
 
 def linear_init(layer, activation=None):
-    """Initializes a linear layer."""
+    """Initialize a linear layer.
 
+    Args:
+        layer (nn.Linear): parameters to initialize.
+        activation (`torch.nn.modules.activation` or str, optional) activation that
+            will be used on the `layer`.
+    """
     x = layer.weight
 
     if activation is None:
@@ -61,7 +80,7 @@ def linear_init(layer, activation=None):
 
 
 def init_basernn(cell):
-    """Initializes a simple RNN."""
+    """Initialize a simple RNN."""
     cell.reset_parameters()
 
     # orthogonal initialization of all recurrent weights
@@ -73,7 +92,7 @@ def init_basernn(cell):
 
 
 def init_gru(cell):
-    """Initializes a GRU."""
+    """Initialize a GRU."""
     init_basernn(cell)
 
     # -1 reset gate biais of GRU
@@ -84,7 +103,7 @@ def init_gru(cell):
 
 
 def init_lstm(cell):
-    """Initializes a LSTM."""
+    """Initialize a LSTM."""
     init_basernn(cell)
 
     # +1 forget gate bias (Jozefowicz et al., 2015)
@@ -95,7 +114,7 @@ def init_lstm(cell):
 
 
 def get_hidden0(rnn):
-    """Returns a initial state of the hidden actiavtion of a RNN."""
+    """Return an initial state of the hidden actiavtion of a RNN."""
 
     n_stacked = rnn.num_layers
     if rnn.bidirectional:
@@ -112,7 +131,7 @@ def get_hidden0(rnn):
 
 
 def replicate_hidden0(hidden, batch_size):
-    """Replicates the initial hidden state for batch work."""
+    """Replicate the initial hidden state for batch work."""
 
     # Note : hidden is not transposed even when using batch_first
     if isinstance(hidden, tuple):
@@ -122,22 +141,17 @@ def replicate_hidden0(hidden, batch_size):
 
 
 def weights_init(module):
-    """Initializes the weights of a module."""
-    # bad but necessary for circular imports
-    from seq2seq.util.torchextend import (MLP, AnnealedDropout, AnnealedGaussianNoise,
-                                          ProbabilityConverter, StochasticRounding,
-                                          ConcreteRounding, L0Gates)
-    from seq2seq.util.l0 import L0Dense
-
-    types_reset_param = (MLP, AnnealedDropout, AnnealedGaussianNoise,
-                         ProbabilityConverter, StochasticRounding, ConcreteRounding,
-                         L0Dense, L0Gates)
-
-    if isinstance(module, types_reset_param):
+    """Initialize the weights of a module."""
+    try:
         module.reset_parameters()
+    except AttributeError:
+        pass
+
     if isinstance(module, nn.Embedding):
         init_param(module.weight)
     elif isinstance(module, nn.LSTM):
         init_lstm(module)
     elif isinstance(module, nn.GRU):
         init_gru(module)
+    elif isinstance(module, nn.Linear):
+        linear_init(module)

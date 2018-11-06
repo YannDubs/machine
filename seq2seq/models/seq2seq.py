@@ -1,15 +1,18 @@
-""" Seq2seq class. """
+"""
+Seq2seq class.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from seq2seq.util.helpers import get_extra_repr
 from seq2seq.util.torchextend import AnnealedGaussianNoise, AnnealedDropout
+from seq2seq.util.base import Module
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class Seq2seq(nn.Module):
+class Seq2seq(Module):
     """Standard sequence-to-sequence architecture with configurable encoder
     and decoder.
 
@@ -17,6 +20,11 @@ class Seq2seq(nn.Module):
         encoder (EncoderRNN): object of EncoderRNN
         decoder (DecoderRNN): object of DecoderRNN
         decode_function (func, optional): function to generate symbols from output hidden states (default: F.log_softmax)
+        mid_dropout_kwargs (dictionary, optonal): additional arguments to mid dropout.
+        mid_noise_kwargs (dictionary, optonal): additional arguments to mid noise.
+        is_dev_mode (bool, optional): whether to store many useful variables in
+            `additional`. Useful when predicting with a trained model in dev mode
+             to understand what the model is doing. Use with `dev_predict`.
 
     Inputs: input_variable, input_lengths, target_variable, teacher_forcing_ratio
         - **input_variable** (list, option): list of sequences, whose length is the batch size and within which
@@ -43,11 +51,9 @@ class Seq2seq(nn.Module):
 
     def __init__(self, encoder, decoder,
                  decode_function=F.log_softmax,
-                 mid_dropout_kwargs={},  # TO DOC
-                 mid_noise_kwargs={},  # TO DOC
-                 is_dev_mode=False):  # TO DOC
+                 mid_dropout_kwargs={},
+                 mid_noise_kwargs={}):
         super(Seq2seq, self).__init__()
-        self.is_dev_mode = is_dev_mode
 
         self.encoder = encoder
         self.decoder = decoder
@@ -58,27 +64,13 @@ class Seq2seq(nn.Module):
         self.mid_noise = AnnealedGaussianNoise(**mid_noise_kwargs)
         self.is_update_mid_noise = self.training
 
-        self.epoch = 0
-        self.training_step = 0
-
-    def set_dev_mode(self, value=True):
-        self.is_dev_mode = value
-        self.encoder.set_dev_mode(value=value)
-        self.decoder.set_dev_mode(value=value)
-
-    def reset_parameters(self):
-        self.encoder.reset_parameters()
-        self.decoder.reset_parameters()
-
-    def flatten_parameters(self):
-        self.encoder.flatten_parameters()
-        self.decoder.flatten_parameters()
-
     def forward(self, input_variable,
                 input_lengths=None,
                 target_variables=None,
                 teacher_forcing_ratio=0,
                 confusers=dict()):
+
+        self._update_n_training_calls()
 
         # precomputes a float tensor of the source lengths as it will be used a lot
         # removes the need of having to change the variable from CPU to GPU
@@ -96,10 +88,8 @@ class Seq2seq(nn.Module):
             target_output = None
             provided_content_attn = None
 
-        additional = {"epoch": self.epoch, "training_step": self.training_step}
         encoder_outputs, encoder_hidden, additional = self.encoder(input_variable,
                                                                    input_lengths,
-                                                                   additional=additional,
                                                                    confusers=confusers)
 
         self.is_update_mid_dropout = self.training
@@ -118,17 +108,23 @@ class Seq2seq(nn.Module):
             encoder_hidden = self._mid_noise(encoder_hidden)
             encoder_hidden = self._mid_dropout(encoder_hidden)
 
-        results = self.decoder(inputs=target_output,
-                               encoder_hidden=encoder_hidden,
-                               encoder_outputs=encoder_outputs,
-                               function=self.decode_function,
-                               teacher_forcing_ratio=teacher_forcing_ratio,
-                               provided_content_attn=provided_content_attn,
-                               source_lengths=input_lengths,
-                               additional=additional,
-                               confusers=confusers)
+        (decoder_outputs,
+         decoder_hidden,
+         ret_dict) = self.decoder(inputs=target_output,
+                                  encoder_hidden=encoder_hidden,
+                                  encoder_outputs=encoder_outputs,
+                                  function=self.decode_function,
+                                  teacher_forcing_ratio=teacher_forcing_ratio,
+                                  provided_content_attn=provided_content_attn,
+                                  source_lengths=input_lengths,
+                                  additional=additional,
+                                  confusers=confusers)
 
-        return results
+        ret_dict["test"].update(self.get_to_test())
+        ret_dict["visualize"].update(self.get_to_visualize())
+        ret_dict["losses"].update(self.get_regularization_losses())
+
+        return decoder_outputs, decoder_hidden, ret_dict
 
     def _mid_dropout(self, x):
         x = self.mid_dropout(x, is_update=self.is_update_mid_dropout)
@@ -139,3 +135,6 @@ class Seq2seq(nn.Module):
         x = self.mid_noise(x, is_update=self.is_update_mid_noise)
         self.is_update_mid_noise = False  # makes sure that updates only once every forward
         return x
+
+    def extra_repr(self):
+        pass

@@ -1,16 +1,18 @@
 import numpy as np
+import math
 
 import torch
 
 import torch.nn as nn
 from torch.optim.lr_scheduler import ExponentialLR
+from torch.optim.optimizer import Optimizer as BaseOptimizer
 
 from seq2seq.optim import Optimizer
 from seq2seq.util.torchextend import MLP
 from seq2seq.util.initialization import linear_init
 from seq2seq.util.helpers import (modify_optimizer_grads, clamp, batch_reduction_f,
-                                  HyperparameterInterpolator, add_to_visualize,
-                                  SummaryStatistics)
+                                  HyperparameterInterpolator, SummaryStatistics,
+                                  add_to_visualize)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -32,11 +34,33 @@ class Confuser(object):
             discriminator. In `None` uses a linear layer.
         default_targets (torch.tensor): default target if not given to the forward
             function.
-        max_scale (float, optional): maximum percentage of the total loss that
-            the confuser loss can reach. Note that this only limits the gradients
-            for the generator not the discrimator.
+        final_max_scale (float, optional): Final (at the end of annealing) maximum
+            percentage of the total loss that the confuser loss can reach. Note
+            that this only limits the gradients for the generator not the discrimator.
         n_steps_discriminate_only (int, optional): Number of steps at the begining
             where you only train the discriminator.
+        optim ({"adam","sgd","adampre"}, optional): optimizer to use for the discriminator.
+            "adampre" is an optimizer that was designed specifically for Mini Max Games:
+            Stabilizing Adversarial Nets With Prediction Methods.
+        final_factor (float, optional): Final (at the end of annealing) factor
+            by which to decrease max loss when comparing it to the current loss.
+            If factor is 2 it means that you consider that the maximum loss will
+            be achieved if your prediction is 1/factor (i.e half) way between the
+            correct i and the best worst case output. Factor = 10 means it can be
+            a lot closer to i. This is usefull as there will always be some noise,
+            and you don't want to penalize the model for some noise. Note that the
+            factor generator is not used in the code but can be called to get
+            the current factor with `confuser.get_factor(<is_update>)`.
+        n_steps_interpolate (int, optional): number of interpolating steps before
+            reaching the `final_factor` and `final_max_scale`.
+        is_anticyclic (bool, optional): whether to append summary statistics as
+            features for the discriminator such that the gnerator cannot bypass
+            the discriminator by constantly changin the order of the features (
+            as the order of the features given to discriminaor matters).
+        factor_kwargs (dictionary, optional): additional dictionary to the factor
+            interpolator.
+        max_scale_kwargs (dictionary, optional): additional dictionary to the max_scale
+            interpolator.
         kwargs:
             Additional parameters for the discriminator.
     """
@@ -45,14 +69,14 @@ class Confuser(object):
                  generator_criterion=None,
                  hidden_size=32,
                  default_targets=None,
-                 final_max_scale=5e-2,  # TO DOC annealing
+                 final_max_scale=5e-2,
                  n_steps_discriminate_only=10,
-                 optim="adam",  # TO DOC
-                 final_factor=1.5,  # TO DOC
-                 n_steps_interpolate=0,  # TO DOC
-                 is_anticyclic=True,  # TO DOC
-                 factor_kwargs={},  # TO DOC
-                 max_scale_kwargs={},  # TO DOC
+                 optim="adampre",
+                 final_factor=1.5,
+                 n_steps_interpolate=0,
+                 is_anticyclic=True,
+                 factor_kwargs={},
+                 max_scale_kwargs={},
                  **kwargs):
         self.is_anticyclic = is_anticyclic
         if self.is_anticyclic:
@@ -155,6 +179,7 @@ class Confuser(object):
         self.n_training_calls = 0
 
     def _prepare_for_new_batch(self):
+        """Prepares the confuser for a new batch."""
         self.discriminator_losses = torch.tensor(0.,
                                                  requires_grad=True,
                                                  dtype=torch.float,
@@ -163,6 +188,7 @@ class Confuser(object):
         self.to_backprop_generator = None
 
     def _scale_generator_loss(self, generator_loss, main_loss=None):
+        """Scales the generator loss."""
         max_scale = self.get_max_scale(True)
         if main_loss is not None:
             if generator_loss > max_scale * main_loss:
@@ -229,7 +255,10 @@ class Confuser(object):
             that you don't add unnessessary noise when the generator is "confused"
             enough. The current losses will be clamped in a leaky manner, then
             hard manner f reaches `max_losses*2`. The shape of  max_losses must
-            be broadcastable with the shape of the output of the criterion.
+            be broadcastable with the shape of the output of the criterion. It is
+            important to have an "admissible" heuristic, i.e an upper bound that
+            is never greater than the real bound. If not when the confuser outputs
+            some random noise, the generator would be regularized in a random manner.
         mask (torch.tensor, optional): mask to apply to the output of the criterion.
             Should be used to mask when varying sequence lengths. The shape of mask
             must be broadcastable with the shape of the output of the criterion.
@@ -237,6 +266,8 @@ class Confuser(object):
             `compute_loss` between `backward`. In this case max_losses cannot
             clamp the loss at each call but only the final average loss over all
             calls.
+        to_summarize_stats (Tensor, optional): tensor whose summary statistics
+            will be added as features. If `None` then use the whole input Tensor.
         """
         # GENERATOR
         if self.n_training_calls > self.n_steps_discriminate_only:
@@ -277,16 +308,18 @@ class Confuser(object):
             generator_loss = -1 * generator_losses.mean()
             generator_loss = self._scale_generator_loss(generator_loss, main_loss)
 
-            # # # # # DEV MODE # # # # #
             if additional is not None:
                 add_to_visualize(generator_losses.mean().item(),
                                  "losses_generator_{}".format(name),
-                                 additional, is_training=True)
+                                 to_visualize=additional.get("visualize", None),
+                                 is_training=True,
+                                 training_step=self.n_training_calls)
 
                 add_to_visualize(generator_loss.item(),
                                  "losses_weighted_generator_{}".format(name),
-                                 additional, is_training=True)
-            # # # # # # # # # # # # # # #
+                                 to_visualize=additional.get("visualize", None),
+                                 is_training=True,
+                                 training_step=self.n_training_calls)
 
             # has to retain graph to not recompute all
             generator_loss.backward(retain_graph=True)
@@ -298,12 +331,12 @@ class Confuser(object):
         # DISCRIMINATOR
         discriminator_loss = self.discriminator_losses.mean()
 
-        # # # # # DEV MODE # # # # #
         if additional is not None:
             add_to_visualize(discriminator_loss.item(),
                              "losses_discriminator_{}".format(name),
-                             additional, is_training=True)
-        # # # # # # # # # # # # # # #
+                             to_visualize=additional.get("visualize", None),
+                             is_training=True,
+                             training_step=self.n_training_calls)
 
         discriminator_loss.backward(**kwargs)
         self.discriminator_optim.step()
@@ -356,12 +389,6 @@ def get_max_loss_loc_confuser(input_lengths_tensor, p=2, factor=1):
 
     return max_losses
 
-# # # # TEST # # # #
-
-
-from torch.optim.optimizer import Optimizer as BaseOptimizer
-import math
-
 
 class AdamPre(BaseOptimizer):
     """Implements Adam algorithm with prediction step.
@@ -376,6 +403,11 @@ class AdamPre(BaseOptimizer):
         eps (float, optional): term added to the denominator to improve
             numerical stability (default: 1e-8)
         weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+
+    Note:
+        - This is an optimizer that was designed specifically for Mini Max Games:
+        Stabilizing Adversarial Nets With Prediction Methods.
+        - Code copied from https://github.com/shahsohil/stableGAN
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8,

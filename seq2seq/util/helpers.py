@@ -1,3 +1,8 @@
+"""
+Sets of useful helper objects.
+"""
+import os
+import glob
 import sys
 import inspect
 import math
@@ -10,6 +15,31 @@ from torch.nn.utils import weight_norm
 from seq2seq.util.initialization import get_hidden0
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def clamp(x,
+          minimum=-float("Inf"),
+          maximum=float("Inf"),
+          is_leaky=False,
+          negative_slope=0.01,
+          hard_min=None,
+          hard_max=None):
+    """
+    Clamps a tensor to the given [minimum, maximum] (leaky) bound, with
+    an optional hard clamping.
+    """
+    lower_bound = (minimum + negative_slope * x) if is_leaky else torch.zeros_like(x) + minimum
+    upper_bound = (maximum + negative_slope * x) if is_leaky else torch.zeros_like(x) + maximum
+    clamped = torch.max(lower_bound, torch.min(x, upper_bound))
+
+    if hard_min is not None or hard_max is not None:
+        if hard_min is None:
+            hard_min = -float("Inf")
+        elif hard_max is None:
+            hard_max = float("Inf")
+        clamped = clamp(x, minimum=hard_min, maximum=hard_max, is_leaky=False)
+
+    return clamped
 
 
 class Clamper:
@@ -35,30 +65,6 @@ class Clamper:
                      hard_min=self.hard_min, hard_max=self.hard_max)
 
 
-def clamp(x,
-          minimum=-float("Inf"),
-          maximum=float("Inf"),
-          is_leaky=False,
-          negative_slope=0.01,
-          hard_min=None,
-          hard_max=None):
-    """Clamps a tensor to the given [minimum, maximum] (leaky) bound, with
-    an optional hard clamping.
-    """
-    lower_bound = (minimum + negative_slope * x) if is_leaky else torch.zeros_like(x) + minimum
-    upper_bound = (maximum + negative_slope * x) if is_leaky else torch.zeros_like(x) + maximum
-    clamped = torch.max(lower_bound, torch.min(x, upper_bound))
-
-    if hard_min is not None or hard_max is not None:
-        if hard_min is None:
-            hard_min = -float("Inf")
-        elif hard_max is None:
-            hard_max = float("Inf")
-        clamped = clamp(x, minimum=hard_min, maximum=hard_max, is_leaky=False)
-
-    return clamped
-
-
 def identity(x):
     """simple identity function"""
     return x
@@ -69,14 +75,14 @@ def mean(l):
     return sum(l) / len(l)
 
 
-def recursive_update(d, u):
-    """Recursively update a dicstionary `d` with `u`."""
-    for k, v in u.items():
+def recursive_update(dic, update):
+    """Recursively update a dictionary `dic` with a new dictionary `update`."""
+    for k, v in update.items():
         if isinstance(v, collections.Mapping):
-            d[k] = recursive_update(d.get(k, {}), v)
+            dic[k] = recursive_update(dic.get(k, {}), v)
         else:
-            d[k] = v
-    return d
+            dic[k] = v
+    return dic
 
 
 def check_import(module, to_use=None):
@@ -116,7 +122,8 @@ def renormalize_input_length(x, input_lengths, max_len=1):
     """Given a tensor that was normalized by a constant value across the whole
         batch, normalizes it by a diferent value for each example in the batch.
 
-    Should preallocate the lengths only once on GPU to speed up.
+    Note:
+        - Should preallocate the lengths only once on GPU to speed up.
 
     Args:
         x (torch.tensor) tensor to normalize of any dimension and size as long
@@ -147,7 +154,7 @@ def get_extra_repr(module, always_shows=[], conditional_shows=dict()):
 
     Note:
         All variables that you want to show have to be attributes of `module` with
-        the same name.The name of the param in the function definition is not enough.
+        the same name. The name of the param in the function definition is not enough.
 
     Args:
         module (nn.Module): Module for which to get `extra_repr`.
@@ -155,7 +162,7 @@ def get_extra_repr(module, always_shows=[], conditional_shows=dict()):
         conditional_show (dictionary or list): variables to show depending on
             their values. Keys are the names, and variables the values
             they should not take to be shown. If a list then the condition
-            is that the value is different form the default one in the constructor.
+            is that their value is different from the default one in the constructor.
     """
     extra_repr = ""
     for show in always_shows:
@@ -210,7 +217,7 @@ def get_rnn(rnn_name, input_size, hidden_size,
             is_weight_norm=False,
             is_get_hidden0=True,
             **kwargs):
-    """Return an initialized rnn."""
+    """Return an initialized rnn (and the initializized first hidden state)."""
     Rnn = get_rnn_cell(rnn_name)
     rnn = Rnn(input_size, hidden_size, **kwargs)
     if is_weight_norm:
@@ -240,7 +247,10 @@ def apply_along_dim(f, X, dim=0, **kwargs):
 
 
 def get_indices(l, keys):
-    """Returns a list of the indices. SLow as O(K*N)"""
+    """
+    Returns a list of the indices associated with each `keys.
+    SLow as O(K*N).
+    """
     out = []
     for k in keys:
         try:
@@ -350,8 +360,92 @@ class HyperparameterInterpolator:
         return current
 
 
+class HyperparameterCurriculumInterpolator:
+    """Helper class to compute the value of a hyperparameter at each training step
+    given a curriculum.
+
+    Args:
+        curriculum (list of tuple): list of dict("step", "value", ["mode"]),
+            defining the the points in betweeen which to use interpolation. If the
+            first element doesn't start at step 0 then will be constant with value
+            equal to the value of the first point in the curriculum.
+        default_mode (str, optional): default interpolation mode when mode not
+            given in `curriculum`. One of {"linear", "geometric"}.
+    """
+
+    def __init__(self, curriculum, default_mode="linear"):
+        if curriculum[0]["step"] > 0:
+            curriculum = [dict(step=0, value=curriculum[0]["value"])] + curriculum
+        self.curriculum = curriculum
+        self.default_mode = default_mode
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """Reset the interpolator."""
+        self.n_training_calls = 0
+        self.curriculum = self.curriculum
+        self.current_interpolator = None
+        self.future_curriculums = self.curriculum
+
+    @property
+    def next_step(self):
+        """Return the next curriculum step."""
+        if self.future_curriculums == []:
+            return float("inf")
+        return self.future_curriculums[0]["step"]
+
+    def new_interpolator(self):
+        """
+        Sets the new sub-interpolator for the current sub-curriculum.
+        """
+        current_curriculum = self.future_curriculums.pop(0)
+        if len(self.future_curriculums) != 0:
+            next_curriculum = self.future_curriculums[0]
+        else:
+            next_curriculum = current_curriculum
+        n_steps_interpolate = next_curriculum["step"] - current_curriculum["step"]
+
+        mode = current_curriculum.get("mode", self.default_mode)
+
+        self.current_interpolator = HyperparameterInterpolator(current_curriculum["value"],
+                                                               next_curriculum["value"],
+                                                               n_steps_interpolate,
+                                                               mode=mode)
+
+    def extra_repr(self, value_name="value"):
+        """
+        Return a a string that can be used by `extra_repr` of a parent `nn.Module`.
+        """
+        txt = '{}_curriculum={}, {}'
+        txt = txt.format(value_name, self.curriculum, self.default_mode)
+        return txt
+
+    @property
+    def is_annealing(self):
+        """Whether you are currently annealing the hyperparameters."""
+        return self.current_interpolator.is_annealing
+
+    def __call__(self, is_update):
+        """Return the current value of the hyperparameter.
+
+        Args:
+            is_update (bool): whether to update the hyperparameter.
+        """
+        if self.n_training_calls == self.next_step:
+            is_new_interpolator = True
+            self.new_interpolator()
+        else:
+            is_new_interpolator = False
+
+        if is_update:
+            self.n_training_calls += 1
+
+        return self.current_interpolator(is_update and not is_new_interpolator)
+
+
 class Rate2Steps:
-    """Converts interpolating rates to steps useful for annealing.
+    """Convert interpolating rates to steps useful for annealing.
 
     Args:
         total_training_calls (int): total number of training steps.
@@ -361,21 +455,46 @@ class Rate2Steps:
         self.total_training_calls = total_training_calls
 
     def __call__(self, rate):
+        """
+        Convert a rate to a number of steps.
+
+        Args:
+            rate (float): rate to convert in [0,1]. If larger than one then considered
+                as already being a number of steps, i.e returns the raw input.
+        """
         if rate > 1:
-            return rate  # rate was actually the final numebr of steps.
+            return rate
         return math.ceil(rate * self.total_training_calls)
 
 
-def l0_loss(x, temperature=10, is_leaky=True, negative_slope=0.01, dim=None):
-    """Computes the approxmate differentiable l0 loss of a matrix."""
+def l0_loss(x, temperature=10, is_leaky=True, negative_slope=0.01, dim=None,
+            keepdim=False, is_no_mean=False):
+    """Compute the approximate differentiable l0 loss of a matrix.
+
+    Note:
+        Uses an absolute value of a tanh which is 0 when x == 0, and 1 for larger
+        values of `x`.
+
+    Args:
+        temperature (float, optional): controls the spikeness of the differentiable
+            l0_loss. When teperature -> infinty, we recover the rel l0_loss.
+        is_leaky (bool, optional): whether to use a leaky l0-loss, i.e penalizing
+            a bit more larger values. This is useful for gradient propagations.
+        negative_slope (float, optional): negative slope of the leakiness.
+        dim (int, optional): the dimension to reduce. By default flattens `x`
+            then reduces to a scalar.
+        keepdim (bool, optional): whether the output tensor has :attr:`dim` retained or not.
+    """
     norm = torch.abs(torch.tanh(temperature * x))
     if is_leaky:
         norm = norm + torch.abs(negative_slope * x)
 
+    if is_no_mean:
+        return norm
     if dim is None:
-        return norm.mean()
+        return norm.mean(keepdim=keepdim)
     else:
-        return norm.mean(dim=dim)
+        return norm.mean(dim=dim, keepdim=keepdim)
 
 
 def regularization_loss(x, p=2., dim=None, lower_bound=1e-4, is_no_mean=False, **kwargs):
@@ -387,7 +506,9 @@ def regularization_loss(x, p=2., dim=None, lower_bound=1e-4, is_no_mean=False, *
         dim (int, optional): the dimension to reduce. By default flattens `x`
             then reduces to a scalar.
         lower_bound (float, optional): lower bounds the absolute value of a entry
-            of x when p<1 to avoid exploding gradients.
+            of x when p<1 to avoid exploding gradients. Note that by lowerbounding
+            the gradients will be 0 for these values (as tehy were clamped).
+        is_no_mean (bool, optional): does not compute the mean over any dimension.
         kwargs:
             Additional parameters to `l0_norm`.
     """
@@ -395,7 +516,7 @@ def regularization_loss(x, p=2., dim=None, lower_bound=1e-4, is_no_mean=False, *
         x = abs_clamp(x, lower_bound)
 
     if p == 0:
-        return l0_loss(x, dim=None, **kwargs)
+        return l0_loss(x, dim=None, is_no_mean=is_no_mean, **kwargs)
 
     loss = (torch.abs(x)**p)
 
@@ -443,36 +564,39 @@ def unfreeze(model):
 
 
 def batch_reduction_f(x, f, batch_first=True, **kwargs):
-    """Applies a reduction function `fun` batchwise."""
+    """Applies a reduction function `fun` batchwise, i.e output will be of len=batch."""
     if x.dim() <= 1:
         return x
     if not batch_first:
-        x = x.transpose(1, 0)
+        x = x.transpose(1, 0).contiguous()
     return f(x.view(x.size(0), -1), dim=1, **kwargs)
 
 
-def add_to_visualize(values, keys, additional, is_training, save_every_n_batches=15):
-    """Every `save_every` batch, adds a certain variable to the `visualization`
+# TO DO : temporary trick -> this should be a callback
+def add_to_visualize(values, keys, to_visualize, is_training, training_step,
+                     save_every_n_batches=5):
+    """Every `save_every_n_batches` batch, adds a certain variable to the `visualization`
     sub-dictionary of additional. Such variables should be the ones that are
     interpretable, and for which the size is independant of the source length.
     I.e avaregae over the source length if it is dependant.
 
     The variables will then be averaged over decoding step and over batch_size.
     """
-    if is_training:
-        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
+    if to_visualize is not None and is_training:
+        if training_step % save_every_n_batches == 0:
             if isinstance(keys, list):
                 for k, v in zip(keys, values):
-                    add_to_visualize(v, k, additional, is_training,
+                    add_to_visualize(v, k, to_visualize, is_training, training_step,
                                      save_every_n_batches=save_every_n_batches)
             else:
                 # averages over the batch size
                 if isinstance(values, torch.Tensor):
                     values = values.mean(0).detach().cpu()
-                additional["visualize"][keys] = values
+                to_visualize[keys] = values
 
 
-def add_to_test(values, keys, additional, is_dev_mode):
+# TO DO : temporary trick -> this should be a callback
+def add_to_test(values, keys, to_test, is_dev_mode):
     """
     Save a variable to additional["test"] only if dev mode is on. The
     variables saved should be the interpretable ones for which you want to
@@ -480,27 +604,21 @@ def add_to_test(values, keys, additional, is_dev_mode):
 
     Batch size should always be 1 when predicting with dev mode !
     """
-    if is_dev_mode:
+    if to_test is not None and is_dev_mode:
         if isinstance(keys, list):
             for k, v in zip(keys, values):
-                add_to_test(v, k, additional, is_dev_mode)
+                add_to_test(v, k, to_test, is_dev_mode)
         else:
             if isinstance(values, torch.Tensor):
                 values = values.detach().cpu()
-            additional["test"][keys] = values
+            to_test[keys] = values
 
 
-def add_regularization(loss, loss_name, additional, is_visualize=True, **kwargs):
+def add_regularization(loss, loss_name, additional, **kwargs):
     """
     Adds a regularization loss.
     """
     additional["losses"][loss_name] = loss
-
-    """
-    if is_visualize:
-        name = 'losses_{}'.format(loss_name)
-        add_to_visualize(loss, name, additional, **kwargs)
-    """
 
 
 class SummaryStatistics:
@@ -587,7 +705,7 @@ class SummaryStatistics:
 
 
 def is_constant(x):
-    """Whether a tensor has all teh same values."""
+    """Whether a tensor has all th3 same values."""
     return torch.any(x == x[0])
 
 
@@ -654,6 +772,27 @@ class ExtendedKurtosis(nn.Module):
 
 
 def mask_infinite_backward_hook(self, grad_input, grad_output):
+    """Masks nan gradients during the backward pass."""
     mask_new_infinite = ~torch.isfinite(grad_input[0]) & torch.isfinite(grad_output[0])
     grad_input0 = grad_input[0].masked_fill(mask_new_infinite, 0.0)
     return (grad_input0, ) + tuple(gi for gi in grad_input[1:])
+
+
+def get_latest_file(path):
+    """Return the latest modified/added file in a path."""
+    list_of_files = glob.glob(os.path.join(path, "*"))
+    latest_file = max(list_of_files, key=os.path.getctime)
+    return latest_file
+
+
+def bound_probability(x, min_p):
+    """Bound a probability from [0,1] to [min_p, 1-min_p]."""
+    if (x < 0).any() or (x > 1).any():
+        x_outside = x[x < 0] if (x < 0).any() else x[x > 1]
+        raise ValueError("x={} is not in [0,1]. Value outside bounds : {}.".format(x, x_outside))
+    if min_p < 0 or min_p > 1:
+        raise ValueError("min_p={} is not in [0,1].".format(min_p))
+
+    range_p = 1 - min_p * 2
+    new_p = x * range_p + min_p
+    return new_p

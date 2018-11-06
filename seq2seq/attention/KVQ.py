@@ -1,4 +1,6 @@
-"""Key Value Query Generator Classes."""
+"""
+Key Value Query Generator Classes.
+"""
 import math
 import warnings
 
@@ -6,8 +8,8 @@ import torch
 import torch.nn as nn
 
 from seq2seq.util.initialization import get_hidden0, weights_init, replicate_hidden0
-from seq2seq.util.helpers import (renormalize_input_length, get_rnn, get_extra_repr,
-                                  add_to_test, add_to_visualize)
+from seq2seq.util.helpers import (renormalize_input_length, get_rnn, get_extra_repr)
+from seq2seq.util.base import Module
 from seq2seq.util.torchextend import (MLP, ProbabilityConverter, AnnealedDropout,
                                       AnnealedGaussianNoise)
 
@@ -59,7 +61,7 @@ def _get_counters(max_len, is_abscounter, is_relcounter, is_rotcounters,
     return counters
 
 
-class BaseKeyValueQuery(nn.Module):
+class BaseKeyValueQuery(Module):
     """Base class for quey query value generators.
 
     Args:
@@ -73,12 +75,9 @@ class BaseKeyValueQuery(nn.Module):
     def __init__(self, hidden_size,
                  output_size=-1,
                  is_contained_kv=False,
-                 min_input_size=32,
-                 is_dev_mode=False):
+                 min_input_size=32):
 
         super(BaseKeyValueQuery, self).__init__()
-
-        self.is_dev_mode = is_dev_mode
 
         self.min_input_size = min_input_size
         self.hidden_size = hidden_size
@@ -87,15 +86,9 @@ class BaseKeyValueQuery(nn.Module):
         self.is_contained_kv = is_contained_kv
         self.input_size = self._compute_input_size()
 
-    def set_dev_mode(self, value=True):
-        self.is_dev_mode = value
-
     def _compute_input_size(self):
         return (max(self.min_input_size, self.output_size)
                 if self.is_contained_kv else self.hidden_size)
-
-    def reset_parameters(self):
-        self.apply(weights_init)
 
     def extra_repr(self):
         return get_extra_repr(self,
@@ -198,11 +191,6 @@ class BaseKeyQuery(BaseKeyValueQuery):
         self.noise_output = AnnealedGaussianNoise(**annealed_noise_output_kwargs)
 
         self.reset_parameters()
-
-    def flatten_parameters(self):
-        """Flattens the parameters of the rnn."""
-        if self.is_kqrnn:
-            self.generator.flatten_parameters()
 
     def extra_repr(self):
         parrent_repr = super().extra_repr()
@@ -337,6 +325,10 @@ class ValueGenerator(BaseKeyValueQuery):
             weight instead of n dimensional. If a n dimension then the network
             can learn to carry some dimensions but not others. The downside is that
             the number of parameters would be larger.
+        is_additive_highway (bool, optional): whether to use a residual connection
+            with a carry weight got th residue. I.e if `True` the carry weight will
+            only be applied to the residue and will not scale the new value with
+            `1-carry`.
         kwargs:
             Additional arguments for the `BaseKeyValueQuery` parent class.
     """
@@ -417,8 +409,8 @@ class ValueGenerator(BaseKeyValueQuery):
                 values = values + carry_rates * embedded
             else:
                 values = (1 - carry_rates) * values + carry_rates * embedded
-            add_to_test(carry_rates, "carry_rates", additional, self.is_dev_mode)
-            add_to_visualize(carry_rates.mean(-1).mean(-1), "carry_rates", additional, self.training)
+            self.add_to_test(carry_rates, "carry_rates")
+            self.add_to_visualize(carry_rates.mean(-1).mean(-1), "carry_rates")
 
         if self.is_res:
             values += embedded

@@ -29,11 +29,11 @@ class Optimizer(object):
 
     def step(self):
         """ Performs a single optimization step, including gradient norm clipping if necessary. """
-        if self.max_grad_value is None:
+        if self.max_grad_value is not None:
             params = itertools.chain.from_iterable([group['params']
                                                     for group in self.optimizer.param_groups])
             torch.nn.utils.clip_grad_value_(params, self.max_grad_norm)
-        if self.max_grad_norm is None:
+        if self.max_grad_norm is not None:
             params = itertools.chain.from_iterable([group['params']
                                                     for group in self.optimizer.param_groups])
             torch.nn.utils.clip_grad_norm_(params, self.max_grad_norm)

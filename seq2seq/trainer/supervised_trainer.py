@@ -1,3 +1,9 @@
+"""Trainer class.
+
+NOTA BENE:
+- I have nearly not touched this class.
+"""
+
 from __future__ import division
 import logging
 import os
@@ -38,6 +44,13 @@ class SupervisedTrainer(object):
         early_stopper (EarlyStopping, optional): Early stopper that will stop if
             no improvements for a certian amount of time. Only used if dev_data
             given. Should have mode="min". (default: None)
+        loss_weight_updater (seq2seq.loss.loss.LossWeightUpdater, optional): updater
+            of the loss weight. Used to update the weight of the loss of due to
+            one token.
+        teacher_forcing_kwargs (dictionary, optional): additional arguments to
+            the teacher forcing percentage interpolator.
+        initial_model (string, optional): name of the file where will save the
+            initial model. this is useful to understand how tohe model was initialized.
     """
 
     def __init__(self,
@@ -53,7 +66,7 @@ class SupervisedTrainer(object):
                  early_stopper=None,
                  loss_weight_updater=None,
                  teacher_forcing_kwargs={},
-                 initial_model=None):  # TO DOC
+                 initial_model=None):
         self._trainer = "Simple Trainer"
         self.random_seed = random_seed
         if random_seed is not None:
@@ -96,10 +109,6 @@ class SupervisedTrainer(object):
                                                        target_variable,
                                                        teacher_forcing_ratio=self.teacher_forcing(True),
                                                        confusers=confusers)
-        # # # # # DEV MODE # # # # #
-        # to visualize correctly balance
-        other["training_step"] = model.training_step
-        # # # # # # # # # # # # # # #
 
         losses = self.evaluator.compute_batch_loss(decoder_outputs,
                                                    decoder_hidden,
@@ -109,7 +118,7 @@ class SupervisedTrainer(object):
         # Backward propagation
         for i, loss in enumerate(losses, 0):
             ### FOR REGULARIZATION BU STILL WORK IN PROGRESS ###
-            if i == 0 and "losses" in other:
+            if i == 0 and model.is_regularize:
                 other_losses = other.pop("losses")
                 for k, additional_loss in other_losses.items():
                     kwargs = {}
@@ -119,12 +128,20 @@ class SupervisedTrainer(object):
                         kwargs = kwargs[0]
                     # avaerage over time steps
                     loss.store_regularization_loss(k, mean(additional_loss),
-                                                   additional=other, **kwargs)
+                                                   to_visualize=other.get("visualize", None),
+                                                   training_step=model.n_training_calls,
+                                                   **kwargs)
 
                 pos_perc = other.pop("pos_perc", None)
                 if pos_perc is not None:
                     pos_perc = mean(pos_perc)
-                loss.balance_regularization_losses(pos_perc=pos_perc, additional=other)
+
+                # DEV MODE model.decoder.mix_attention.balance
+                if model.decoder.is_position_attn and model.decoder.is_content_attn:
+                    loss.balance_regularization_losses(model.decoder.mix_attention.balance,
+                                                       pos_perc=pos_perc,
+                                                       to_visualize=other.get("visualize", None),
+                                                       training_step=model.n_training_calls)
             #####################################################
             loss.scale_loss(self.loss_weights[i])
             loss.backward(retain_graph=True)
@@ -193,7 +210,6 @@ class SupervisedTrainer(object):
             shutil.copytree(os.path.join(self.expt_dir, model_name), initial_path)
 
         for epoch in range(start_epoch, n_epochs + 1):
-            model.epoch = epoch
 
             if epoch % 3 == 0:
                 print("Epoch: %d, Step: %d" % (epoch, step))
@@ -211,7 +227,6 @@ class SupervisedTrainer(object):
             for i_batch, batch in enumerate(batch_generator):
                 step += 1
                 step_elapsed += 1
-                model.training_step = step
 
                 if self.loss_weight_updater is not None:
                     for l in self.loss:

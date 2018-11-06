@@ -1,4 +1,6 @@
-""" Decoder class for a seq2seq. """
+"""
+Decoder class for a seq2seq.
+"""
 import random
 import warnings
 
@@ -9,18 +11,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
-from .attention import ContentAttention, HardGuidance
-from .baseRNN import BaseRNN
-
+from seq2seq.attention import (ContentAttention, PositionAttention, AttentionMixer,
+                               QueryGenerator, ValueGenerator)
+from seq2seq.attention.content import HardGuidance
 from seq2seq.util.helpers import (renormalize_input_length, get_rnn,
                                   get_extra_repr, format_source_lengths,
-                                  recursive_update, add_to_visualize,
-                                  add_to_test)
+                                  recursive_update, add_to_test,
+                                  mean)  # DEV MODE
 from seq2seq.util.torchextend import AnnealedGaussianNoise
 from seq2seq.util.initialization import weights_init, init_param
-from seq2seq.models.KVQ import QueryGenerator
-from seq2seq.models.Positioner import AttentionMixer, PositionAttention
 from seq2seq.util.confuser import get_max_loss_loc_confuser
+from .baseRNN import BaseRNN
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -51,8 +52,13 @@ class DecoderRNN(BaseRNN):
             (default: 0)
         use_attention(bool, optional): flag indication whether to use attention
             mechanism or not (default: false)
-        full_focus(bool, optional): flag indication whether to use full attention
-            mechanism or not (default: false)
+        is_focus (bool, optional): whether to "help" the network using attention
+            combining the context vector with the embedding before giving it
+            to the neural network.
+        is_full_focus (bool, optional): whether to "help" the network using attention
+            combining the context vector with the embedding, and the output again
+            (extension of `is_focus`) with the context before giving it to the
+            neural network.
         is_transform_controller (bool, optional): whether to pass the hidden
             activation of the encoder through a linear layer before using it as
             initialization of the decoder. This is useful when using `pre-rnn`
@@ -80,12 +86,6 @@ class DecoderRNN(BaseRNN):
         attmix_kwargs (dict, optional): additional arguments to the attention mixer.
         embedding_noise_kwargs (dict, optional): additional arguments to embedding
             noise.
-        is_dev_mode (bool, optional): whether to store many useful variables in
-            `additional`. Useful when predicting with a trained model in dev mode
-             to understand what the model is doing. Use with `dev_predict`.
-        is_viz_train (bool, optional): whether to save how the averages of some
-            intepretable variables change during training in "visualization"
-            of `additional`.
 
     Attributes:
         KEY_ATTN_SCORE (str): key used to indicate attention weights in `ret_dict`
@@ -134,6 +134,7 @@ class DecoderRNN(BaseRNN):
                  bidirectional=False,
                  dropout_p=0,
                  use_attention=None,
+                 is_focus=False,
                  is_full_focus=False,
                  is_transform_controller=False,
                  is_add_all_controller=True,
@@ -146,26 +147,22 @@ class DecoderRNN(BaseRNN):
                  position_kwargs={},
                  query_kwargs={},
                  attmix_kwargs={},
-                 embedding_noise_kwargs={},
-                 is_dev_mode=False,
-                 is_viz_train=False,
-                 is_mid_focus=True):  # TO DOC
+                 embedding_noise_kwargs={}):
 
         super(DecoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p,
                                          n_layers, rnn_cell)
-        self.is_dev_mode = is_dev_mode
-        self.is_viz_train = is_viz_train
 
         self.is_weight_norm_rnn = is_weight_norm_rnn
         self.embedding_size = embedding_size
         self.output_size = vocab_size
         self.use_attention = use_attention
+        self.is_attention = use_attention is not None
         self.eos_id = eos_id
         self.sos_id = sos_id
         self.bidirectional_encoder = bidirectional
         self.is_full_focus = is_full_focus
-        self.is_mid_focus = is_mid_focus
+        self.is_focus = is_focus
         self.is_old_content = is_old_content
 
         self.is_add_all_controller = is_add_all_controller
@@ -183,12 +180,12 @@ class DecoderRNN(BaseRNN):
         input_rnn_size = self.embedding_size
         input_prediction_size = self.hidden_size
         if self.use_attention == 'pre-rnn':
-            if self.is_full_focus or self.is_mid_focus:
+            if self.is_full_focus or self.is_focus:
                 input_rnn_size = self.value_size
             else:
                 input_rnn_size += self.value_size
         elif self.use_attention == 'post-rnn':
-            if self.is_full_focus or self.is_mid_focus:
+            if self.is_full_focus or self.is_focus:
                 input_prediction_size = self.value_size
             else:
                 input_prediction_size += self.value_size
@@ -197,7 +194,7 @@ class DecoderRNN(BaseRNN):
 
         if self.is_add_all_controller:
             n_additional_controller_features += 3  # abs_counter_decoder / rel_counter_decoder / source_len
-            if self.use_attention is not None:
+            if self.is_attention:
                 self.mean_attn0 = Parameter(torch.tensor(0.0))
                 n_additional_controller_features += 1  # mean_attn_old
             if self.is_content_attn:
@@ -230,7 +227,7 @@ class DecoderRNN(BaseRNN):
                                   is_get_hidden0=False)
 
         self.query_generator = None
-        if self.use_attention is not None:
+        if self.is_attention:
 
             if self.use_attention == "pre-rnn" and self.is_transform_controller:
                 self.transform_controller = nn.Linear(self.hidden_size, self.hidden_size)
@@ -263,7 +260,7 @@ class DecoderRNN(BaseRNN):
             if self.is_content_attn and self.is_position_attn:
                 self.mix_attention = AttentionMixer(self.hidden_size, **attmix_kwargs)
 
-            if self.is_full_focus or self.is_mid_focus:
+            if self.is_full_focus or self.is_focus:
                 if self.use_attention == 'pre-rnn':
                     self.ffocus_merge = nn.Linear(self.embedding_size + self.value_size,
                                                   input_rnn_size)
@@ -275,31 +272,11 @@ class DecoderRNN(BaseRNN):
 
         self.reset_parameters()
 
-    def set_dev_mode(self, value=True):
-        self.is_dev_mode = value
-        if self.query_generator is not None:
-            self.query_generator.set_dev_mode(value=value)
-        if self.is_position_attn:
-            self.position_attention.set_dev_mode(value=value)
-        if self.is_content_attn:
-            self.content_attention.set_dev_mode(value=value)
-        if self.is_content_attn and self.is_position_attn:
-            self.mix_attention.set_dev_mode(value=value)
-
     def reset_parameters(self):
-        self.apply(weights_init)
-
-        if self.query_generator is not None:
-            self.query_generator.reset_parameters()
-        if self.is_position_attn:
-            self.position_attention.reset_parameters()
-        if self.is_content_attn:
-            self.content_attention.reset_parameters()
-        if self.is_content_attn and self.is_position_attn:
-            self.mix_attention.reset_parameters()
+        super().reset_parameters()
 
         if self.is_add_all_controller:
-            if self.use_attention is not None:
+            if self.is_attention:
                 if IS_X05:
                     self.mean_attn0 = Parameter(torch.tensor(0.5))
                 else:
@@ -313,15 +290,6 @@ class DecoderRNN(BaseRNN):
                 self.content_confidence0 = Parameter(torch.tensor(0.5))
             if self.is_position_attn:
                 self.pos_confidence0 = Parameter(torch.tensor(0.5))
-
-    def flatten_parameters(self):
-        self.controller.flatten_parameters()
-
-        if self.is_position_attn:
-            self.position_attention.flatten_parameters()
-
-        if self.query_generator is not None:
-            self.query_generator.flatten_parameters()
 
     def extra_repr(self):
         return get_extra_repr(self,
@@ -470,6 +438,17 @@ class DecoderRNN(BaseRNN):
                 # Remove the unnecessary dimension.
                 step_output = decoder_output.squeeze(1)
                 # Get the actual symbol
+
+                # TO DO : don't rely on decoding to save the follwing variables
+                # this should be done in `add_regularization_loss`
+                additional["losses"] = additional.get("losses", {})
+                additional["visualize"] = additional.get("visualize", {})
+                additional["test"] = additional.get("test", {})
+
+                additional["test"].update(self.get_to_test())
+                additional["visualize"].update(self.get_to_visualize())
+                additional["losses"].update(self.get_regularization_losses())
+
                 symbols = decode(di, step_output, step_attn, additional=additional)
 
         else:
@@ -504,6 +483,17 @@ class DecoderRNN(BaseRNN):
                     step_attn = attn[:, di, :]
                 else:
                     step_attn = None
+
+                # TO DO : don't rely on decoding to save the follwing variables
+                # this should be done in `add_regularization_loss`
+                additional["losses"] = additional.get("losses", {})
+                additional["visualize"] = additional.get("visualize", {})
+                additional["test"] = additional.get("test", {})
+
+                additional["test"].update(self.get_to_test())
+                additional["visualize"].update(self.get_to_visualize())
+                additional["losses"].update(self.get_regularization_losses())
+
                 decode(di, step_output, step_attn, additional=additional)
 
         if "query_confuser" in confusers:
@@ -541,13 +531,14 @@ class DecoderRNN(BaseRNN):
                                                      to_summarize_stats=queries)
 
         if self.is_dev_mode:
-            queries = torch.cat(additional["queries"], dim=1)
-            # DEV MODE TO UNDERSTAND CONFUSERS
-            # don't store in additional becuase already all in ret_dict
-            ret_dict["test"]["queries"] = queries.detach().cpu()
+            queries = torch.cat(additional["queries"], dim=1).detach().cpu()
+            add_to_test(queries, "queries", ret_dict["test"], self.is_dev_mode)
 
         ret_dict[DecoderRNN.KEY_SEQUENCE] = sequence_symbols
         ret_dict[DecoderRNN.KEY_LENGTH] = lengths.tolist()
+
+        #print({k: (type(v), len(v), mean(v).mean()) for k, v in ret_dict["losses"].items()})
+        # print()
 
         return decoder_outputs, decoder_hidden, ret_dict
 
@@ -649,7 +640,7 @@ class DecoderRNN(BaseRNN):
 
     def _validate_args(self, inputs, encoder_hidden, encoder_outputs,
                        function, teacher_forcing_ratio):
-        if self.use_attention is not None:
+        if self.is_attention:
             if encoder_outputs is None:
                 raise ValueError("Argument encoder_outputs cannot be None when attention is used.")
 
@@ -721,10 +712,9 @@ class DecoderRNN(BaseRNN):
                                                                        :content_attn.size(2), :]
                                                    ).squeeze(2)
 
-            add_to_visualize([content_confidence, additional["mean_content"]],
-                             ["content_confidence", "mean_content"],
-                             additional, self.training)
-            add_to_test(content_attn, "content_attention", additional, self.is_dev_mode)
+            self.add_to_visualize([content_confidence, additional["mean_content"]],
+                                  ["content_confidence", "mean_content"])
+            self.add_to_test(content_attn, "content_attention")
 
         if self.is_position_attn:
             if step == 0:
@@ -755,9 +745,12 @@ class DecoderRNN(BaseRNN):
 
             attn = pos_attn
 
-            add_to_test(pos_attn, "position_attention", additional, self.is_dev_mode)
+            self.add_to_test(pos_attn, "position_attention")
 
         if self.is_content_attn and self.is_position_attn:
+            if self.is_regularize:
+                # mix attention should get all losses
+                additional["losses"].update(self.get_regularization_losses())
             attn, pos_perc = self.mix_attention(controller_output,
                                                 step,
                                                 content_attn,
@@ -769,9 +762,9 @@ class DecoderRNN(BaseRNN):
 
             additional["position_percentage"] = pos_perc
 
-            add_to_test([pos_confidence], ["pos_confidence"], additional, self.is_dev_mode)
+            self.add_to_test([pos_confidence], ["pos_confidence"])
             if self.mix_attention.mode != "pos_conf":
-                add_to_test(content_confidence, "content_confidence", additional, self.is_dev_mode)
+                self.add_to_test(content_confidence, "content_confidence")
 
         additional["mean_attn"] = torch.bmm(attn,
                                             rel_counter_encoder[:, :attn.size(2), :]
@@ -779,9 +772,8 @@ class DecoderRNN(BaseRNN):
 
         context = torch.bmm(attn, values)
 
-        add_to_visualize([additional["mean_attn"], step],
-                         ["mean_attn", "step"],
-                         additional, self.training)
+        self.add_to_visualize([additional["mean_attn"], step],
+                              ["mean_attn", "step"])
 
         return context, attn
 
@@ -795,7 +787,7 @@ class DecoderRNN(BaseRNN):
         if self.is_viz_train and self.training:
             additional["visualize"] = additional.get("visualize", dict())
 
-        if self.training:
+        if self.is_regularize:
             additional["losses"] = additional.get("losses", dict())
 
         if self.is_position_attn:
@@ -808,7 +800,7 @@ class DecoderRNN(BaseRNN):
         return additional
 
     def _combine_context(self, input_var, context):
-        if self.is_mid_focus:
+        if self.is_focus:
             combined_input = torch.cat((F.relu(context), input_var), dim=2)
             combined_input = self.ffocus_merge(combined_input)
 
@@ -839,7 +831,7 @@ class DecoderRNN(BaseRNN):
 
         additional_features.extend([source_len, rel_counter_decoder, abs_counter_decoder])
 
-        if self.use_attention is not None:
+        if self.is_attention:
             if step != 0:
                 mean_attn_old = additional["mean_attn"].unsqueeze(1)
             else:

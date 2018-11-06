@@ -1,3 +1,7 @@
+"""
+Pytorch extension modules.
+"""
+
 import warnings
 
 import torch
@@ -6,20 +10,22 @@ from torch.nn.parameter import Parameter
 
 from seq2seq.util.initialization import linear_init
 from seq2seq.util.helpers import (get_extra_repr, identity, clamp, Clamper,
-                                  HyperparameterInterpolator, batch_reduction_f)
+                                  HyperparameterInterpolator, batch_reduction_f,
+                                  bound_probability)
+from seq2seq.util.base import Module
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class MLP(nn.Module):
+class MLP(Module):
     """General MLP class.
 
     Args:
-        input_size (int): size of the input
-        hidden_size (int): number of hidden neurones. Force is to be between
-            [input_size, output_size]
-        output_size (int): output size
-        activation (function, optional): activation function
+        input_size (int): size of the input.
+        hidden_size (int): number of hidden neurones. Forces it to be between
+            [input_size, output_size].
+        output_size (int): output size.
+        activation (torch.nn.modules.activation, optional): unitialized activation class.
         dropout_input (float, optional): dropout probability to apply on the
             input of the generator.
         dropout_hidden (float, optional): dropout probability to apply on the
@@ -31,7 +37,7 @@ class MLP(nn.Module):
     """
 
     def __init__(self, input_size, hidden_size, output_size,
-                 activation=nn.ReLU,
+                 activation=nn.LeakyReLU,
                  bias=True,
                  dropout_input=0,
                  dropout_hidden=0,
@@ -68,6 +74,7 @@ class MLP(nn.Module):
         return y
 
     def reset_parameters(self):
+        super().reset_parameters()
         linear_init(self.mlp, activation=self.activation)
         linear_init(self.out)
 
@@ -75,7 +82,7 @@ class MLP(nn.Module):
         return get_extra_repr(self, always_shows=["input_size", "hidden_size", "output_size"])
 
 
-class ProbabilityConverter(nn.Module):
+class ProbabilityConverter(Module):
     """Maps floats to probabilites (between 0 and 1), element-wise.
 
     Args:
@@ -90,8 +97,7 @@ class ProbabilityConverter(nn.Module):
             and max_p equiprobable.
         temperature (bool, optional): whether to add a paremeter controling the
             steapness of the activation. This is useful when x is used for multiple
-            tasks, and you don't want to constraint it's magnitude. By default
-            doesn't let it change sign.
+            tasks, and you don't want to constraint its magnitude.
         bias (bool, optional): bias used to shift the activation. This is useful
             when x is used for multiple tasks, and you don't want to constraint
             it's scale.
@@ -107,8 +113,14 @@ class ProbabilityConverter(nn.Module):
             (default: identity)
         temperature_transformer (callable, optional): transformer function of the
             temperature. This function should only take care of the boundaries
-            (ex: leaky relu  or relu). By default leakyclamp to [.1,10]. Note:
-            cannot be a lambda function because of pickle. (default: relu)
+            (ex: leaky relu  or relu), if not the initial_probability might not
+            work correctly (as `_porbability_to_bias`) doesn't take into account
+            the transformers. By default leakyclamp to [.1,10] then hardclamp to
+            [0.01, inf[. Note: cannot be a lambda function because
+            of pickle.
+        fix_point (tuple, optional): tuple (x,y) which defines a fix point of
+            the probability converter. With a fix_point, can only use a temperature
+            parameter but not a bias. This is only possible with `activation="hard-sigmoid"`.
     """
 
     def __init__(self,
@@ -120,10 +132,9 @@ class ProbabilityConverter(nn.Module):
                  initial_probability=0.5,
                  initial_x=0,
                  bias_transformer=identity,
-                 # TO DOC + say that _probability_to_bias doesn't take into accoiuntr transform => needs to be boundary case transform
                  temperature_transformer=Clamper(minimum=0.1, maximum=10., is_leaky=True,
                                                  hard_min=0.01),
-                 fix_point=None):  # TO DOC. only hard sigmoid
+                 fix_point=None):
 
         super(ProbabilityConverter, self).__init__()
         self.min_p = min_p
@@ -138,7 +149,6 @@ class ProbabilityConverter(nn.Module):
         self.fix_point = fix_point
 
         if self.fix_point is not None:
-
             if self.activation != "hard-sigmoid":
                 warnings.warn("Can only use `fix_point` if activation=hard-sigmoid. Replace {} by 'hard-sigmoid' ".format(self.activation))
                 self.activation = 'hard-sigmoid'
@@ -164,8 +174,8 @@ class ProbabilityConverter(nn.Module):
             else:
                 self.bias = torch.tensor(initial_bias).to(device)
         else:
-            self.initial_temperature = self._fix_point_init(self.initial_probability,
-                                                            initial_x=self.initial_x)
+            self.initial_temperature = self._fix_point_temperature_init(self.initial_probability,
+                                                                        initial_x=self.initial_x)
             if self.is_temperature:
                 self.temperature = Parameter(torch.tensor(self.initial_temperature)).to(device)
             else:
@@ -207,6 +217,7 @@ class ProbabilityConverter(nn.Module):
                                                  "fix_point"])
 
     def _probability_to_bias(self, p, initial_x=0):
+        """Compute the bias to use given an inital `point(initial_x, p)`"""
         assert p > self.min_p and p < 1 - self.min_p
         range_p = 1 - self.min_p * 2
         p = (p - self.min_p) / range_p
@@ -221,7 +232,11 @@ class ProbabilityConverter(nn.Module):
 
         return bias
 
-    def _fix_point_init(self, p, initial_x=0):
+    def _fix_point_temperature_init(self, p, initial_x=0):
+        """
+        Compute the temperature to use based on a given inital `point(initial_x, p)`
+            and a fix_point.
+        """
         assert p > self.min_p and p < 1 - self.min_p
         range_p = 1 - self.min_p * 2
         p = (p - self.min_p) / range_p
@@ -232,7 +247,7 @@ class ProbabilityConverter(nn.Module):
         return temperature
 
 
-class GaussianNoise(nn.Module):
+class GaussianNoise(Module):
     """Gaussian noise regularizer.
 
     Args:
@@ -243,7 +258,7 @@ class GaussianNoise(nn.Module):
             to. This means that sigma can be the same regardless of the scale of
             the vector.
         is_relative_detach (bool, optional): whether to detach the variable before
-            computing the scale of the noise if `is_relative_sigma=True` . If
+            computing the scale of the noise if `is_relative_sigma=True`. If
             `False` then the scale of the noise won't be seen as a constant but
             something to optimize: this will bias the network to generate vectors
             with smaller values.
@@ -281,7 +296,7 @@ class AnnealedGaussianNoise(GaussianNoise):
             the noise.
         n_steps_interpolate (int, optional): number of training steps before
             reaching the `final_sigma`.
-        mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
+        mode ({"linear", "geometric"}, optional): interpolation mode.
         is_relative_sigma (bool, optional): whether to use relative standard
             deviation instead of absolute. Relative means that it will be
             multiplied by the magnitude of the value your are adding the noise
@@ -315,6 +330,7 @@ class AnnealedGaussianNoise(GaussianNoise):
 
     def reset_parameters(self):
         self.get_sigma.reset_parameters()
+        super().reset_parameters()
 
     def extra_repr(self):
         detached_str = '' if self.is_relative_sigma else ', not_relative'
@@ -336,7 +352,7 @@ class AnnealedDropout(nn.Dropout):
             if no interpolate and 0.1 if interpolating.
         n_steps_interpolate (int, optional): number of training steps before
             reaching the `final_dropout`.
-        mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
+        mode ({"linear", "geometric"}, optional): interpolation mode.
         kwargs: additional arguments to `HyperparameterInterpolator`.
     """
 
@@ -372,12 +388,17 @@ class AnnealedDropout(nn.Dropout):
         return super().forward(x)
 
 
-class StochasticRounding(nn.Module):
+class StochasticRounding(Module):
     """Applies differentiable stochastic rounding.
 
     Notes:
-        The gradients are biased but it's a lot uicker to compute than the
-    concrete one.
+        - I thought that the gradient were biased but now I'm starting to think
+        that they are actually unbiased as if you average over multiple rounding
+        steps the average will be an identity function (i.e the expectation is to
+        map each point to itself). In which case this would be unbiased. But
+        empirically I find better results with `ConcreteRounding` which makes me think
+        that it is actually biased. HAVE TO CHECK
+        - approximatevly 1.5x speedup compared to concrete rounding.
 
     Args:
         min_p (float, optional): minimum probability of rounding to the "wrong"
@@ -389,20 +410,13 @@ class StochasticRounding(nn.Module):
         super().__init__()
         self.min_p = min_p
         self.start_step = start_step
-        self.n_training_calls = 0
-
-    def reset_parameters(self):
-        self.n_training_calls = 0
 
     def extra_repr(self):
         return get_extra_repr(self, always_shows=["start_step"])
 
-    def forward(self, x, is_update=True):
+    def forward(self, x):
         if not self.training:
             return x.round()
-
-        if is_update and self.training:
-            self.n_training_calls += 1
 
         if self.start_step > self.n_training_calls:
             return x
@@ -410,21 +424,23 @@ class StochasticRounding(nn.Module):
         x_detached = x.detach()
         x_floored = x_detached.floor()
         decimals = (x_detached - x_floored)
-        p = (decimals * (1 - 2 * self.min_p)) + self.min_p
+        p = bound_probability(decimals, self.min_p)
         x_hard = x_floored + torch.bernoulli(p)
         x_delta = x_hard - x_detached
         x_rounded = x_delta + x
         return x_rounded
 
 
-class ConcreteRounding(nn.Module):
+class ConcreteRounding(Module):
     """Applies rounding through gumbel/concrete softmax.
 
     Notes:
-        - The gradients are unbiased but a lot slower than StochasticRounding.
+        - Approximatively 1.5x slower than stochastic rounding.
         - The temperature variable follows the implementation in the paper,
             so it is the inverse of the temperature in `ProbabilityConverter`.
             I.e lower temperature means higher slope.
+        - The gradients with respect to `x` look like multiple waves, but the peaks
+            are higher for higher absolute values. The peaks are at the integres.
 
     Args:
         start_step (int, optional): number of steps to wait for before starting rounding.
@@ -432,7 +448,12 @@ class ConcreteRounding(nn.Module):
             number. Useful to keep exploring.
         initial_temperature (float, optional): initial softmax temperature.
         final_temperature (float, optional): final softmax temperature. Default:
-            `2/3 if n_steps_interpolate==0 else 0.5`.
+            `2/3 if n_steps_interpolate==0 else 0.5`. If temperature -> infty,
+            the realex bernouilli distributions start looking like a constant
+            distribution equal to 0.5 (i.e whatever the decimal, the probability
+            of getting rounded above is 0.5). If temperature -> 0, the relaxed
+            bernouilli becomes a real bernoulli (i.e probabiliry of getting
+            rounded above is equal to the decimal).
         n_steps_interpolate (int, optional): number of training steps before
             reaching the `final_temperature`.
         mode (str, optional): interpolation mode. One of {"linear", "geometric"}.
@@ -460,11 +481,9 @@ class ConcreteRounding(nn.Module):
                                                           mode=mode,
                                                           **kwargs)
 
-        self.n_training_calls = 0
-
     def reset_parameters(self):
-        self.n_training_calls = 0
         self.get_temperature.reset_parameters()
+        super().reset_parameters()
 
     def extra_repr(self):
 
@@ -478,9 +497,6 @@ class ConcreteRounding(nn.Module):
         if not self.training:
             return x.round()
 
-        if is_update and self.training:
-            self.n_training_calls += 1
-
         if self.start_step > self.n_training_calls:
             return x
 
@@ -490,7 +506,7 @@ class ConcreteRounding(nn.Module):
         x_floored = x_detached.floor()
 
         decimals = x - x_floored
-        p = decimals * (1 - 2 * self.min_p) + self.min_p
+        p = bound_probability(decimals, self.min_p)
         softBernouilli = torch.distributions.RelaxedBernoulli(temperature, p)
         soft_sample = softBernouilli.rsample()
         new_d_detached = soft_sample.detach()
@@ -502,7 +518,7 @@ class ConcreteRounding(nn.Module):
         return x_rounded
 
 
-class L0Gates(nn.Module):
+class L0Gates(Module):
     """Return gates for L0 regularization.
 
     Notes:
@@ -517,6 +533,8 @@ class L0Gates(nn.Module):
             gate is 1.
         bias (bool, optional): whether to use a bias for the gate generation.
         is_mlp (bool, optional): whether to use a MLP for the gate generation.
+        rounding_kwargs (dictionary, optional): additional arguments to the
+            `ConcreteRounding`.
         kwargs:
             Additional arguments to the gate generator.
     """
@@ -525,6 +543,7 @@ class L0Gates(nn.Module):
                  input_size, output_size,
                  is_at_least_1=False,
                  is_mlp=False,
+                 rounding_kwargs={},
                  **kwargs):
         super().__init__()
 
@@ -539,12 +558,14 @@ class L0Gates(nn.Module):
             self.gate_generator = nn.Linear(self.input_size, self.output_size,
                                             **kwargs)
 
-        self.rounder = ConcreteRounding()
+        self.rounder = ConcreteRounding(**rounding_kwargs)
 
         self.reset_parameters()
 
     def reset_parameters(self):
-        linear_init(self.gate_generator, "sigmoid")
+        super().reset_parameters()
+        if not self.is_mlp:
+            linear_init(self.gate_generator, "sigmoid")
 
     def extra_repr(self):
         return get_extra_repr(self,

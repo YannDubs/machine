@@ -8,6 +8,8 @@ import numpy as np
 
 from seq2seq.util.helpers import HyperparameterInterpolator, Rate2Steps, add_to_visualize
 
+import pdb
+from pdb import set_trace as bp
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -65,7 +67,7 @@ def get_losses(loss_names, tgt, is_predict_eos, eos_weight=None, **kwargs):
 
 
 class LossWeightUpdater:
-    """Helper class to update the weight of the tokens of a loss.
+    """Helper class to update the weight of the loss of a token.
 
     Args:
         indices (list of str): ordered list of the vocabulary indices of the token
@@ -227,7 +229,8 @@ class Loss(object):
                                   anneal_max_proportion=0,
                                   rate_start_step=0.1,
                                   add_every_i=1,
-                                  additional=None,
+                                  to_visualize=None,
+                                  training_step=None,
                                   **kwargs):
         """ Use a regularization loss. """
         if name_other not in self.max_p_interpolators:
@@ -257,13 +260,13 @@ class Loss(object):
             other_loss_detached = other_loss.detach()
             # only scale ifother_loss_detached >  max_loss
             weight = (max_loss / other_loss_detached).clamp(max=1.)
-            weight[torch.isnan(weight)] = 1.
+            weight[~torch.isfinite(weight)] = 1.
 
         weighted_loss = weight * other_loss
         self.regularization_loses[name_other] = weighted_loss
 
         # # # # # DEV MODE # # # # #
-        if additional is not None:
+        if to_visualize is not None:
             if self.acc_loss.item() < 0:
                 raise ValueError("The loss appears to be negative loss={}.".format(self.acc_loss.item()))
             elif self.acc_loss.item() == 0:
@@ -271,14 +274,16 @@ class Loss(object):
             else:
                 add_to_visualize(weighted_loss.mean().item() / self.acc_loss.item(),
                                  "losses_weighted_{}".format(name_other),
-                                 additional, is_training=True)
+                                 to_visualize, is_training=True, training_step=training_step)
 
             add_to_visualize(other_loss.mean().item(),
                              "losses_{}".format(name_other),
-                             additional, is_training=True)
+                             to_visualize, is_training=True, training_step=training_step)
         # # # # # # # # # # # # # # #
 
-    def balance_regularization_losses(self, pos_perc=None, additional=None):
+    # LEGACY
+    def balance_regularization_losses(self, balance, pos_perc=None, to_visualize=None,
+                                      training_step=None):
         """
         Adds / Remove some pos_perc loss in order to compensate the regularization
         that has been added for the positional or content attention. I.e
@@ -286,8 +291,17 @@ class Loss(object):
         one of the attentions and should not push the network to use one type of
         attention.
 
-        SHOULD NOT BE HERE!!!
+        Note:
+            - loss = Sum_p perc * x_p + Sum_j (1 - perc) * x_j. Where p and c are
+            the losses in position and content attn respectively
+            - dL/dperc = Sum_p x_p - Sum_c x_c. So compensate by simply adding a
+            loss term whose dL_{comp}/dperc = - dL/dperc =  - Sum_p x_p + Sum_c x_c
+            - simplest way is simply : L_{comp} = ( - Sum_p x_p + Sum_c x_c ) * perc
+            - legagy code : beter to just detach pos_perc when multiplying
         """
+        if balance == "math_s":
+            return
+
         if pos_perc is not None:
             # this represents how much penalty the network gets that pushes
             # it towards using content (can be negative)
@@ -298,14 +312,18 @@ class Loss(object):
                 elif name.startswith("cont_"):
                     penalty_pos -= loss.detach()
 
-            # detaching so backprop on pos perc
-            self.regularization_loses["balance"] = - penalty_pos / pos_perc.detach()
-            nans = torch.isnan(self.regularization_loses["balance"])
-            self.regularization_loses["balance"][nans] = 0.
-            self.regularization_loses["balance"] = self.regularization_loses["balance"] * pos_perc
+            if balance == "old":
+                self.regularization_loses["balance"] = - penalty_pos / pos_perc.detach()
+                nans = torch.isnan(self.regularization_loses["balance"])
+                # nans = torch.isfinite(self.regularization_loses["balance"])
+                self.regularization_loses["balance"][nans] = 0.
+                self.regularization_loses["balance"] = self.regularization_loses["balance"] * pos_perc
+
+            if balance == "math_c":
+                self.regularization_loses["balance"] = - penalty_pos * pos_perc
 
         # # # # # DEV MODE # # # # #
-        if additional is not None and pos_perc is not None:
+        if to_visualize is not None and pos_perc is not None:
             if self.acc_loss.item() < 0:
                 raise ValueError("The loss appears to be negative loss={}.".format(self.acc_loss.item()))
             elif self.acc_loss.item() == 0:
@@ -313,9 +331,11 @@ class Loss(object):
             else:
                 add_to_visualize(self.regularization_loses["balance"].mean().item() /
                                  self.acc_loss.item(),
-                                 "losses_weighted_balance", additional, is_training=True)
+                                 "losses_weighted_balance", to_visualize,
+                                 is_training=True, training_step=training_step)
             add_to_visualize(self.regularization_loses["balance"].mean().item(),
-                             "losses_balance", additional, is_training=True)
+                             "losses_balance", to_visualize,
+                             is_training=True, training_step=training_step)
         # # # # # # # # # # # # # # #
 
     def _apply_regularization_losses(self):

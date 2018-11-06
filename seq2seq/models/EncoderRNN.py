@@ -1,4 +1,6 @@
-""" Encoder class for a seq2seq. """
+"""
+Encoder class for a seq2seq.
+"""
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
@@ -7,10 +9,9 @@ from torch.nn.utils.rnn import pad_sequence
 from .baseRNN import BaseRNN
 
 from seq2seq.util.initialization import replicate_hidden0, init_param, weights_init
-from seq2seq.util.helpers import (get_rnn, get_extra_repr, format_source_lengths,
-                                  add_to_test)
+from seq2seq.util.helpers import (get_rnn, get_extra_repr, format_source_lengths)
 from seq2seq.util.torchextend import ProbabilityConverter
-from seq2seq.models.KVQ import KeyGenerator, ValueGenerator
+from seq2seq.attention import KeyGenerator, ValueGenerator
 from seq2seq.util.confuser import get_max_loss_loc_confuser
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -28,20 +29,28 @@ class EncoderRNN(BaseRNN):
         input_dropout_p (float, optional): dropout probability for the input
             sequence (default: 0)
         rnn_cell (str, optional): type of RNN cell (default: gru)
+        is_weight_norm_rnn (bool, optional): whether to use weight normalization
+            for the RNN. Weight normalization is similar to batch norm or layer
+            normalization and has been shown to help when learning large models.
         n_layers (int, optional): number of recurrent layers (default: 1)
         bidirectional (bool, optional): if True, becomes a bidirectional encoder
             (default False)
         dropout_p (float, optional): dropout probability for the output sequence
             (default: 0)
         variable_lengths (bool, optional): if use variable length RNN (default: False)
+        is_highway (bool, optional): whether to use a highway between the emebdding
+            and the value.
+        initial_highway (float, optional): initial percentage of highway.
+        is_res (bool, optional): whether to use a residual connection between the
+            embedding and the value.
+        is_key (bool, optional): whether to use a key generator.
+        is_value (bool, optional): whether to use a value generator.
+        is_decoupled_kv (bool, optional): whether to use half of the hidden
+            activation as key and other half as value. This is the same to the
+            key-value paper. `Frustratingly short attention spans in neural
+            language modeling`.
         key_kwargs (dict, optional): additional arguments to the key generator.
         value_kwargs (dict, optional): additional arguments to the value generator.
-        is_dev_mode (bool, optional): whether to store many useful variables in
-            `additional`. Useful when predicting with a trained model in dev mode
-             to understand what the model is doing. Use with `dev_predict`.
-        is_viz_train (bool, optional): whether to save how the averages of some
-            intepretable variables change during training in "visualization"
-            of `additional`.
 
     Inputs: inputs, input_lengths
         - **inputs**: list of sequences, whose length is the batch size and within
@@ -67,21 +76,19 @@ class EncoderRNN(BaseRNN):
     def __init__(self, vocab_size, max_len, hidden_size, embedding_size,
                  input_dropout_p=0,
                  rnn_cell='gru',
-                 is_weight_norm_rnn=False,  # TO DOC
+                 is_weight_norm_rnn=False,
                  n_layers=1,
                  bidirectional=False,
                  dropout_p=0,
                  variable_lengths=False,
-                 key_kwargs={},
-                 value_kwargs={},
                  is_highway=False,
+                 initial_highway=0.5,
                  is_res=False,
                  is_key=True,
                  is_value=True,
                  is_decoupled_kv=False,
-                 initial_highway=0.5,
-                 is_dev_mode=False,
-                 is_viz_train=False):
+                 key_kwargs={},
+                 value_kwargs={}):
         super(EncoderRNN, self).__init__(vocab_size, max_len, hidden_size,
                                          input_dropout_p, dropout_p, n_layers,
                                          rnn_cell)
@@ -95,8 +102,6 @@ class EncoderRNN(BaseRNN):
         self.is_key = is_key
         self.is_value = is_value
         self.is_decoupled_kv = is_decoupled_kv
-        self.is_dev_mode = is_dev_mode
-        self.is_viz_train = is_viz_train
 
         # # # keeping for testing # # #
         self.is_highway = is_highway
@@ -145,31 +150,13 @@ class EncoderRNN(BaseRNN):
 
         self.reset_parameters()
 
-    def set_dev_mode(self, value=True):
-        self.is_dev_mode = value
-        if self.is_key:
-            self.key_generator.set_dev_mode(value=value)
-        if self.is_value:
-            self.value_generator.set_dev_mode(value=value)
-
     def reset_parameters(self):
-        self.apply(weights_init)
-
-        if self.is_key:
-            self.key_generator.reset_parameters()
-        if self.is_value:
-            self.value_generator.reset_parameters()
+        super().reset_parameters()
 
         # # # keeping for testing # # #
         if self.is_highway and not self.is_value:
             init_param(self.carry)
         # # # # # # # # # # # # # # # #
-
-    def flatten_parameters(self):
-        self.controller.flatten_parameters()
-
-        if self.is_key:
-            self.key_generator.flatten_parameters()
 
     def extra_repr(self):
         return get_extra_repr(self,
@@ -190,6 +177,9 @@ class EncoderRNN(BaseRNN):
                 list that contains the lengths of sequences in the mini-batch. The
                 Tensor has the same information but is preinitialized on teh
                 correct device.
+            additional (dictionary): dictionary containing additional variables
+                that are necessary for some hyperparamets.
+            confusers (dictionary, optional): dictionary of confusers to use.
 
         Returns: output, hidden
             - **output** (batch, seq_len, hidden_size): variable containing the
@@ -268,7 +258,7 @@ class EncoderRNN(BaseRNN):
                                                    to_summarize_stats=keys)
 
         # DEV MODE TO UNDERSTAND CONFUSERS
-        add_to_test(keys, "keys", additional, self.is_dev_mode)
+        self.add_to_test(keys, "keys")
 
         if self.is_value:
             values, additional = self.value_generator(
@@ -318,5 +308,8 @@ class EncoderRNN(BaseRNN):
 
         if self.is_viz_train:
             additional["visualize"] = additional.get("visualize", dict())
+
+        if self.is_regularize:
+            additional["losses"] = additional.get("losses", dict())
 
         return additional

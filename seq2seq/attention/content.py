@@ -1,4 +1,7 @@
-""" Content attention modules. """
+"""
+Content attention modules.
+"""
+
 import math
 
 import torch
@@ -8,11 +11,12 @@ import torch.nn.functional as F
 from seq2seq.util.initialization import weights_init, linear_init
 from seq2seq.util.torchextend import MLP, ProbabilityConverter
 from seq2seq.util.helpers import Clamper
+from seq2seq.util.base import Module
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class ContentAttention(nn.Module):
+class ContentAttention(Module):
     """
     Applies a content attention mechanism on the output features from the decoder.
 
@@ -25,7 +29,18 @@ class ContentAttention(nn.Module):
 
     Args:
         dim(int): The number of expected features in the output
-        method(str): The method to compute the alignment, mlp or dot
+        method({'multiplicative', "additive, "scaledot", "dot", "hard"}, optional):
+            The method to compute the alignment. `"dot"` corresponds to a simple
+            product. `"additive"` is the original  attention [Bahdanau et al., 2015].
+            `"Multiplicative"` is faster and more space efficient [Luong et al., 2015]
+            but performs a little bit worst for high dimensions. `"scaledot"
+            [Vaswani et al., 2017] mitigates the highdimensional issue by rescaling
+            the dot product. `"scalemult"` uses the same rescaling trick but with
+            a multiplicative attention.
+        post_counter_size (int, float): size of the `post_counter` that has been
+            concatenated to the key and query. `None` if not using any `post_couner`.
+
+    # The following docstring is not up to date:
 
     Inputs: output, context
         - **output** (batch, output_len, dimensions): tensor containing the output features from the decoder.
@@ -48,11 +63,10 @@ class ContentAttention(nn.Module):
 
     """
 
-    def __init__(self, dim, method="dot", post_counter_size=None, is_dev_mode=False):
+    def __init__(self, dim, method="scalemult", post_counter_size=None):
 
         super(ContentAttention, self).__init__()
         # # # keeping for testing # # #
-        self.is_dev_mode = is_dev_mode
         self.is_postcounter = post_counter_size is not None
         if self.is_postcounter:
             self.counter_size = post_counter_size
@@ -77,12 +91,6 @@ class ContentAttention(nn.Module):
 
         self.reset_parameters()
 
-    def set_dev_mode(self, value=True):
-        self.is_dev_mode = value
-
-    def reset_parameters(self):
-        self.apply(weights_init)
-
     def set_mask(self, mask):
         """
         Sets indices to be masked
@@ -91,6 +99,9 @@ class ContentAttention(nn.Module):
             mask (torch.Tensor): tensor containing indices to be masked
         """
         self.mask = mask
+
+    def extra_repr(self):
+        pass
 
     def forward(self, queries, keys, additional, **attention_method_kwargs):
         """Compute the content attention.
@@ -131,10 +142,10 @@ class ContentAttention(nn.Module):
         # SHOULD USE REAL MAX AS IT IS DIFFERENTIABLE (JUST 1 for the max)
         approx_max_logit = logits.logsumexp(dim=-1)
 
-        self._add_to_test([logits, approx_max_logit],
-                          ["logits", "approx_max_logit"],
-                          additional)
-        #self._add_to_visualize(approx_max_logit, ["approx_max_logit"], additional)
+        self.add_to_test([logits, approx_max_logit],
+                         ["logits", "approx_max_logit"])
+
+        #self.add_to_visualize(approx_max_logit, ["approx_max_logit"])
 
         # SHOULD TRY THIS AT SOME POINT
         # indeed max < logsumexp < max + log(n)
@@ -154,6 +165,8 @@ class ContentAttention(nn.Module):
         """
         if method == 'multiplicative':
             method = MultiplicativeAttn(dim, is_scale=False)
+        elif method == 'scalemult':
+            method = MultiplicativeAttn(dim, is_scale=True)
         elif method == 'additive':
             method = AdditiveAttn(dim)
         elif method == 'scaledot':
@@ -167,45 +180,10 @@ class ContentAttention(nn.Module):
 
         return method
 
-    def _add_to_test(self, values, keys, additional):
-        """
-        Save a variable to additional["test"] only if dev mode is on. The
-        variables saved should be the interpretable ones for which you want to
-        know the value of during test time.
 
-        Batch size should always be 1 when predicting with dev mode !
-        """
-        if self.is_dev_mode:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_test(v, k, additional)
-            else:
-                if isinstance(values, torch.Tensor):
-                    values = values.detach().cpu()
-                additional["test"][keys] = values
-
-    def _add_to_visualize(self, values, keys, additional, save_every_n_batches=15):
-        """Every `save_every` batch, adds a certain variable to the `visualization`
-        sub-dictionary of additional. Such variables should be the ones that are
-        interpretable, and for which the size is independant of the source length.
-        I.e avaregae over the source length if it is dependant.
-
-        The variables will then be averaged over decoding step and over batch_size.
-        """
-        if "visualize" in additional and additional["training_step"] % save_every_n_batches == 0:
-            if isinstance(keys, list):
-                for k, v in zip(keys, values):
-                    self._add_to_visualize(v, k, additional)
-            else:
-                # averages over the batch size
-                if isinstance(values, torch.Tensor):
-                    values = values.mean(0).detach().cpu()
-                additional["visualize"][keys] = values
-
-
-class DotAttn(nn.Module):
+class DotAttn(Module):
     """
-    Implements the computation of attention by using a scaled attention just liek
+    Implements the computation of attention by using a scaled attention just like
     in "attention is all you need". Scaling can help when dimension is large :
     making sure that there are no  extremely small gradients
     """
@@ -220,8 +198,11 @@ class DotAttn(nn.Module):
             logits = logits / math.sqrt(queries.size(-1))
         return logits
 
+    def extra_repr(self):
+        pass
 
-class MultiplicativeAttn(nn.Module):
+
+class MultiplicativeAttn(Module):
     """
     Implements the computation of attention by using a scaled attention just liek
     in "attention is all you need". Scaling can help when dimension is large :
@@ -235,16 +216,16 @@ class MultiplicativeAttn(nn.Module):
 
         self.reset_parameters()
 
-    def reset_parameters(self):
-        linear_init(self.linear)
-
     def forward(self, queries, keys):
         transformed_queries = self.linear(queries)
         logits = self.scaled_dot(transformed_queries, keys)
         return logits
 
+    def extra_repr(self):
+        pass
 
-class AdditiveAttn(nn.Module):
+
+class AdditiveAttn(Module):
     """
     Implements additive attention as seen in Bahdanau et al. :
     "Neural Machine Translation by Jointly Learning to Align and Translate"
@@ -257,8 +238,8 @@ class AdditiveAttn(nn.Module):
 
         self.reset_parameters()
 
-    def reset_parameters(self):
-        self.apply(weights_init)
+    def extra_repr(self):
+        pass
 
     def forward(self, decoder_states, encoder_states):
         # apply mlp to all encoder states for current decoder
@@ -291,7 +272,7 @@ class AdditiveAttn(nn.Module):
         return logits
 
 
-class HardGuidance(nn.Module):
+class HardGuidance(Module):
     """
     Attention method / attentive guidance method for data sets that are annotated with attentive guidance.
     """
@@ -335,3 +316,6 @@ class HardGuidance(nn.Module):
         attention_scores = attention_scores
 
         return attention_scores
+
+    def extra_repr(self):
+        pass

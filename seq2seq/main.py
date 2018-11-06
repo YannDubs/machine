@@ -18,7 +18,7 @@ from seq2seq.dataset.helpers import get_train_dev
 from seq2seq.util.callbacks import EarlyStopping
 from seq2seq.util.confuser import Confuser
 from seq2seq.util.helpers import Rate2Steps, regularization_loss
-from seq2seq.models.Positioner import get_regularizers_positioner
+from seq2seq.attention.position import get_regularizers_positioner
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -54,7 +54,7 @@ def get_seq2seq_model(src,
                       total_training_calls,
                       variable_lengths=True,
                       is_mlps=True,
-                      embedding_size=128,
+                      embedding_size=64,
                       rnn_cell='gru',
                       hidden_size=128,
                       is_bidirectional=False,
@@ -68,13 +68,14 @@ def get_seq2seq_model(src,
                       anneal_mid_dropout=0.1,
                       anneal_mid_noise=0,
                       is_res=False,
-                      is_highway=False,
+                      is_highway=True,
                       initial_highway=0.7,
                       is_single_carry=True,
                       is_additive_highway=True,
                       is_transform_controller=False,
                       is_add_all_controller=True,
                       use_attention="pre-rnn",
+                      is_focus=False,
                       is_full_focus=False,
                       content_method='scaledot',
                       is_content_attn=True,
@@ -104,37 +105,36 @@ def get_seq2seq_model(src,
                       is_relative_sigma=True,
                       is_clamp_mu=True,
                       is_learn_sigma_to_conf=False,
-                      is_force_sigma=False,  # DEV
+                      is_force_sigma=False,
                       anneal_min_sigma=0.1,
                       is_building_blocks_mu=True,
                       is_bb_bias=True,
-                      is_old_content=False,
                       is_sequential_attn=False,
                       is_reg_bb_weights=False,
                       is_reg_const_weights=False,
-                      is_reg_old_weights=False,  # TO DOC / DEV MODE
-                      is_reg_clamp_mu=True,  # TO DOC OR EVEN ENFORCE
-                      is_reg_round_weights=False,  # TO DOC
-                      is_reg_variance_weights=False,  # TO DOC
-                      is_l0_bb_weights=True,  # TO DOC
+                      is_reg_old_weights=False,
+                      is_reg_clamp_mu=True,
+                      is_reg_round_weights=False,
+                      is_reg_variance_weights=False,
+                      is_l0_bb_weights=True,
                       l0_mode="rounding",
-                      lp_reg_weights=1,  # TO DOC
-                      is_clamp_weights=True,  # TO DOC
-                      rate_start_round=0,  # TO DOC
-                      anneal_temp_round=0.1,  # TO DOC
-                      rounder_weights="concrete",  # TO DOC
-                      rounder_mu="concrete",  # TO DOC
-                      anneal_bb_weights_noise=0,  # DEV MODE : which best
-                      anneal_bb_noise=0,  # DEV MODE : which best
-                      anneal_bb_const_noise=0,  # DEV MODE : which best
+                      lp_reg_weights=1,
+                      is_clamp_weights=True,
+                      rate_start_round=0,
+                      anneal_temp_round=0.1,
+                      rounder_weights="concrete",
+                      rounder_mu="concrete",
+                      anneal_bb_weights_noise=0,
+                      anneal_bb_noise=0,
+                      anneal_bb_const_noise=0,
                       mode_attn_mix="pos_conf",
-                      rate_attmix_wait=0,  # TO DOC / DEV MODE
-                      default_pos_perc=0.5,  # TO DOC
-                      is_reg_pos_perc=False,  # TO DOC
-                      rounder_perc="concrete",   # TO DOC / DEV MODE
+                      rate_attmix_wait=0,
+                      default_pos_perc=0.5,
+                      is_reg_pos_perc=False,
+                      rounder_perc="concrete",
                       is_dev_mode=False,
                       is_viz_train=False,
-                      is_mid_focus=False):  # TO DOC
+                      balance="old"):
     """Return a initialized extrapolator model.
 
     Args:
@@ -204,6 +204,9 @@ def get_seq2seq_model(src,
         is_add_all_controller (bool, optional): whether to add all computed features
             to the decoder in order to have a central model that "knows everything".
         use_attention ({"post-rnn", "pre-rnn", None}, optional): where to use attention.
+        is_focus (bool, optional): whether to "help" the network using attention
+            combining the context vector with the embedding before giving it
+            to the neural network.
         is_full_focus (bool, optional): whether to use a trick that forces the
             network to focus on attention rather than only it's input.
         content_method ({"dot", "hard", "mlp"}, optional): content attention
@@ -253,6 +256,13 @@ def get_seq2seq_model(src,
         is_postcounter (bool, optional): whether to append the counters to the
             output of the generator instead of the inputs.
         is_position_attn (bool, optional): whether to use positional attention.
+        n_steps_prepare_pos (int, optional): number steps during which
+            to consider the positioning as in a preparation mode. During
+            preparation mode, the model have less parameters to tweak, it will
+            focus on what I thought were the most crucial bits. For example it
+            will have a fix sigma and won't have many of the regularization term,
+            this is to help it start at a decent place in a lower dimensional
+            space, before going to the hard task of tweaking all at the same time.
         positioning_method ({"gaussian",
             "laplace"}, optional): name of the positional distribution.
             `laplace` is more human plausible but `gaussian` works best.
@@ -269,6 +279,8 @@ def get_seq2seq_model(src,
         is_learn_sigma_to_conf (bool, optional): whether to use a trainable
             sigma_to_conf converter function. If `True` will use a reverse sigmoid
             with learnable temperature.
+        is_force_sigma (bool, optional): whether to us the annealed sigma instead
+            of learning the value.
         anneal_min_sigma (float, optional): if not 0 , it will force
             the network to keep a higher sigma while it's learning. min_sigma will
             actually start at `initial_sigma` and will linearly decrease at each
@@ -296,14 +308,113 @@ def get_seq2seq_model(src,
             more extrapolable (i.e with constants, the network has to make varying
             weights which is not interpretable. If the blocks ae varying then
             the "hard" extrapolable output would already be done for the network).
-
-
-        anneal_bb_weights_noise=0,  # TO DOC ###
-        anneal_bb_noise=0,  # TO DOC ###
-
-        is_pos_perc_weight_conf (bool, optional): whether to force the model to
-            generate meaningfull confidence, by making the positonal percentange
-            be the `position_confidence / (position_confidence + content_confidence)`.
+        is_reg_old_weights (bool, optional): whether to use a lp norm regularisation
+            on the building blocks that depend on previous positioning attention.
+            This can be useful as these building blocks cannot be used correctly
+            before positioning attention actually converged.
+        is_reg_clamp_mu (bool, optional): whether to regularise with lp norm the
+            clamping of mu. I.e push the network to not overshoot and really
+            generate the desired mu rather than the clamped one. This can be
+            useful as if the mu completely overshoots it will be hard for it to
+            come back to normal values if it needs to. It also makes sense to
+            output what you want rather than relying on postpropressing.
+        is_reg_round_weighs (bool, optional): whether to regularise with lp norm
+            the building block weights in order to push them towards integers.
+            This is the soft version of `rounder_weights`.
+        is_reg_variance_weights (bool, optional): whether to use lp norm
+            regularisation to force the building blocks to have low variance
+            across time steps. This can be useful as it forces the model to use
+            simpler weight patterns that are more extrapolable. For example it
+            would prefer giving a weight of `1` to `block_j/n`than using a weight
+            of `j` to `block_1/n`.
+        is_l0_bb_weights (bool, optional): whether to use l0 regularisation on
+            the building block weights. This is achieved by reparametrizing the
+            l0 loss as done in “Learning Sparse Neural Network through L_0
+            Regularisation”.
+        l0_mode ({“basic”, “rounding”}, optional): what type of l0 regularisation
+            to use. If `basic` it will follow the method used in “Learning Sparse
+            Neural Network through L_0 Regularisation”. If `rounding` it will
+            round the gates in the forward pass, thus using gates that are either
+            0 or 1 during the forward pass but using the approximative binary
+            gates during the backward pass.
+        lp_reg_weights (bool, optional): the p in the lp norm to use for all the
+            regularisation above. p can be in [0,”inf”]. If `p=0` will use some
+            approximation to the l0 norm. `is_l0_bb_weights` is preferred over`p=0`
+            with `is_reg_bb_weights`.
+        is_clamp_weights (bool, optional): whether to clamp the building block
+            weights on some meaningful intervals.
+        rate_start_rounding (float, optional): percentage of training steps to
+            wait before starting the rounding of all variables to round.
+        anneal_temp_round (float, optional): percentage of training steps for
+            which to anneal the temperature in the rounding of all variables to round.
+        rounder_weights ({“concrete”, “stochastic”, None}, optional): the method
+            for approximative differential rounding to use for the required building
+            block weights. If `concrete` it will use the concrete distribution
+            similarly to “The Concrete Distribution: A Continuous Relaxation of
+            Discrete Random Variables”. If `stochastic` it will round to the
+            ceiling with a probability equal to the decimal of x and then use
+            straight through estimators in the backward pass. If `None` will not
+            use any rounding. Rounding is desirable to make the output more
+            interpretable and extrapolable (as the building blocks were designed
+            such that integer wights could be used to solve most positonal patterns).
+        rounder_mu({“concrete”, “stochastic”, None}, optional): the method for
+            approximative differential rounding to use for rounding mu to the
+            position of words. If `concrete` it will use the concrete distribution
+            similarly to “The Concrete Distribution: A Continuous Relaxation of
+            Discrete Random Variables”. If `stochastic` it will round to the
+            ceiling with a probability equal to the decimal of x and then use
+            straight through estimators in the backward pass. If `None` will not
+            use any rounding. Rounding is desirable to make the position attention
+            look at the correct position even for sentences longer than it have
+            ever seen.
+        anneal_bb_weights_noise (float, optional): annealed noise to apply to
+            the building block weights. This parameter defines the percentage of
+            training calls before the noise model should reach the final relative
+            standard deviation of the noise. This can be seen as a softer version
+            of `is_reg_bb_weights`.
+        anneal_bb_noise (float, optional): annealed noise to apply to the value
+            of the building blocks. This parameter defines the percentage of
+            training calls before the noise model should reach the final relative
+            standard deviation of the noise. This can be seen as a softer version
+            of `is_reg_bb_weights`.
+        anneal_bb_const_noise (float, optional): annealed noise to apply to the
+            value of the constant building blocks. This parameter defines the
+            percentage of training calls before the noise model should reach the
+            final relative standard deviation of the noise. This can be seen as
+            a softer version of `is_reg_const_weights`.
+        mode ({"generated","normalized_pos_conf","pos_conf"}, optional) how to
+            generate the position confidence when mixing the content and positioning
+            attention. `generated` will generate one from the controller,
+            this might give good results but is less interpretable. `mean_conf`
+            will normalize the positional confidence by `(position_confidence
+            + content_confidence)`, this will force meaningfull confidences for
+            both attentions. The latter should not be used when not using sequential
+            attention because pos% will always be 0.5 if both are confident, i.e
+            content cannot just be used for position to help it.`pos_conf` will
+            directly use the position cofidence, this will force meaningfull
+            positioning confidence but not the content ones. This also says
+            to the network that if position is confident use it regardless of content
+            because it's more extrapolable.
+        rate_attnmix_wait (float, optional): percentage of training steps to wait
+            for before starting to generate the positional percentage. Until then
+            will use `default_pos_perc`.
+        default_pos_perc (float, optional): constant positional percentage to
+            use while `rate_attnmix_wait`.
+        is_reg_pos_perc (bool, optional): whether to use lp norm regularisation
+            in order to push the network to use positional attention when it can.
+            This is desirable as positional attention is tailored for location
+            attention and is thus more interpretable and extrapolable. This is
+            only needed if content attention is able to find some positional
+            pattern, which shouldn’t be the case if it confused correctly.
+        rounder_perc ({“concrete”, “stochastic”, None}, optional): the method
+            for approximative differential rounding to use for rounding mu to the
+            position of words. If `concrete` it will use the concrete distribution
+            similarly to “The Concrete Distribution: A Continuous Relaxation of
+            Discrete Random Variables”. If `stochastic` it will round to the ceiling
+            with a probability equal to the decimal of x and then use straight
+            through estimators in the backward pass. If `None` will not use any
+            rounding. Rounding is desirable to make the position attention look
+            at the correct position even for sentences longer than it have ever seen.
         is_dev_mode (bool, optional): whether to store many useful variables in
             `additional`. Useful when predicting with a trained model in dev mode
              to understand what the model is doing. Use with `dev_predict`.
@@ -345,8 +456,7 @@ def get_seq2seq_model(src,
                       annealed_dropout_kwargs=kq_annealed_dropout_kwargs,
                       annealed_noise_kwargs=kq_annealed_noise_kwargs,
                       annealed_dropout_output_kwargs=kq_annealed_dropout_output_kwargs,
-                      annealed_noise_output_kwargs=kq_annealed_noise_output_kwargs,
-                      is_dev_mode=is_dev_mode)
+                      annealed_noise_output_kwargs=kq_annealed_noise_output_kwargs)
 
     value_kwargs = dict(output_size=value_size,
                         is_contained_kv=is_contained_kv,
@@ -355,8 +465,7 @@ def get_seq2seq_model(src,
                         is_mlps=is_mlps,
                         initial_highway=initial_highway,
                         is_single_carry=is_single_carry,
-                        is_additive_highway=is_additive_highway,
-                        is_dev_mode=is_dev_mode)
+                        is_additive_highway=is_additive_highway)
 
     encoder = EncoderRNN(len(src.vocab),
                          max_len,
@@ -376,9 +485,7 @@ def get_seq2seq_model(src,
                          is_key=is_key,
                          is_value=is_value,
                          is_decoupled_kv=is_decoupled_kv,
-                         initial_highway=initial_highway,
-                         is_dev_mode=is_dev_mode,
-                         is_viz_train=is_viz_train)
+                         initial_highway=initial_highway)
 
     # Decoder
     query_additional_kwargs = dict(key_generator=(encoder.key_generator.generator
@@ -423,7 +530,6 @@ def get_seq2seq_model(src,
                            is_mlps=is_mlps,
                            is_weight_norm_rnn=is_weight_norm_rnn,
                            is_clamp_mu=is_clamp_mu,
-                           is_dev_mode=is_dev_mode,
                            is_building_blocks_mu=is_building_blocks_mu,
                            is_bb_bias=is_bb_bias,
                            is_sequential_attn=is_sequential_attn,
@@ -453,11 +559,11 @@ def get_seq2seq_model(src,
                     if n_steps_prepare_pos is None else n_steps_prepare_pos)
     attmix_kwargs = dict(is_mlps=is_mlps,
                          mode=mode_attn_mix,
-                         is_dev_mode=is_dev_mode,
                          n_steps_wait=n_steps_wait,
                          rounder_perc_kwargs=rounder_perc_kwargs,
                          is_reg_pos_perc=is_reg_pos_perc,
-                         default_pos_perc=default_pos_perc)
+                         default_pos_perc=default_pos_perc,
+                         balance=balance)
 
     embedding_noise_kwargs = dict(
         n_steps_interpolate=rate2steps(anneal_decoder_noise_input))
@@ -489,10 +595,8 @@ def get_seq2seq_model(src,
                          query_kwargs=query_kwargs,
                          attmix_kwargs=attmix_kwargs,
                          embedding_noise_kwargs=embedding_noise_kwargs,
-                         is_dev_mode=is_dev_mode,
                          is_add_all_controller=is_add_all_controller,
-                         is_viz_train=is_viz_train,
-                         is_mid_focus=is_mid_focus)
+                         is_focus=is_focus)
 
     mid_dropout_kwargs = dict(
         n_steps_interpolate=rate2steps(anneal_mid_dropout))
@@ -500,8 +604,10 @@ def get_seq2seq_model(src,
 
     seq2seq = Seq2seq(encoder, decoder,
                       mid_dropout_kwargs=mid_dropout_kwargs,
-                      mid_noise_kwargs=mid_noise_kwargs,
-                      is_dev_mode=is_dev_mode)
+                      mid_noise_kwargs=mid_noise_kwargs)
+
+    seq2seq.set_dev_mode(value=is_dev_mode)
+    seq2seq.set_viz_train(value=is_viz_train)
 
     return seq2seq
 
@@ -522,7 +628,7 @@ def train(train_path,
           initial_teacher_forcing=0.2,
           batch_size=32,
           eval_batch_size=256,
-          lr=0.005,
+          lr=1e-3,
           save_every=100,
           print_every=100,
           log_level="info",
@@ -537,23 +643,23 @@ def train(train_path,
           write_logs=None,
           is_attnloss=False,
           eos_weight=1,
-          anneal_eos_weight=0,  # to doc : not tested + to hyperparmeter optimize
-          _initial_eos_weight=0.05,  # to doc
+          anneal_eos_weight=0,  # TO DO : hyperparmeter optimize
+          _initial_eos_weight=0.05,
           use_attention="pre-rnn",
           content_method='scaledot',
           is_basic_init=False,
-          is_amsgrad=False,
-          rate_prepare_pos=0.05,  # DEV MODE : TO DOC
-          is_confuse_eos=False,  # DEV MODE : TO DOC
-          is_confuse_key=False,  # DEV MODE : TO DOC
-          key_generator_criterion="l05",  # DEV MODE : TO DOC
-          is_confuse_query=False,  # DEV MODE : TO DOC
-          query_generator_criterion="l05",  # DEV MODE : TO DOC
-          confuser_optim="adam",  # DEV MODE : TO DOC
-          n_steps_discriminate_only=15,  # DEV MODE
-          n_steps_interpolate_confuser=0.05,  # DEV MODE
-          plateau_reduce_lr=[4, 0.5],  # DEV MODE : TO DOC
-          is_new_l0=False,  # Choose best
+          is_amsgrad=True,
+          rate_prepare_pos=0.05,
+          is_confuse_eos=False,
+          is_confuse_key=False,
+          key_generator_criterion="l05",
+          is_confuse_query=False,
+          query_generator_criterion="l05",
+          confuser_optim="adam",
+          n_steps_discriminate_only=15,
+          n_steps_interpolate_confuser=0.05,
+          plateau_reduce_lr=[4, 0.5],
+          is_new_l0=False,  # DEV MODE : CHose best
           _initial_model="initial_model",
           **kwargs):
     """Trains the model given all parameters.
@@ -618,16 +724,51 @@ def train(train_path,
             parameter defines the percentage of training calls before the mdoel
             should reach the final `eos_weight`.
         attention ({"post-rnn", "pre-rnn", None}, optional): where to use attention.
-        content_method ({"dot", "hard", "mlp"}, optional): attention function.
+        content_method({'multiplicative', "additive, "scaledot", "dot", "hard"}, optional):
+            The method to compute the alignment. `"dot"` corresponds to a simple
+            product. `"additive"` is the original  attention [Bahdanau et al., 2015].
+            `"Multiplicative"` is faster and more space efficient [Luong et al., 2015]
+            but performs a little bit worst for high dimensions. `"scaledot"
+            [Vaswani et al., 2017] mitigates the highdimensional issue by rescaling
+            the dot product. `"scalemult"` uses the same rescaling trick but with
+            a multiplicative attention.
         is_basic_init (bool, optional): Whether to use the basic uniform initialization
             instead of the more "state of the art", layer dependent initialization.
             Should not be used, because many parameters are th probabilities,
             and you don't want to start a probability at 0 but 0.5.
         is_amsgrad (bool, optional): Whether to use amsgrad, which is supposed
             to make Adam more stable : "On the Convergence of Adam and Beyond".
+        rate_prepare_pos (int, optional): percentage of total steps during which
+            to consider the positioning as in a preparation mode. During
+            preparation mode, the model have less parameters to tweak, it will
+            focus on what I thought were the most crucial bits. For example it
+            will have a fix sigma and won't have many of the regularization term,
+            this is to help it start at a decent place in a lower dimensional
+            space, before going to the hard task of tweaking all at the same time.
+        is_confuse_eos (bool, optional): whether to remove the ability of the
+            decoder to know what was the maximum length of the training examples.
+            By doing so the network is forced not to rely on such trick to output
+            eos, but rather to learn a harder mapping between the text and eos.
         is_confuse_key (bool, optional): whether to remove the ability of the
             key to know what encoding step it is at. By doing so the network is
             forced to used the positional attention when counting is crucial.
+        key_generator_criterion ({"l05", "l1"}, optional): what type of loss
+            to use for the confusers key generator.
+        is_confuse_query (bool, optional): whether to remove the ability of the
+            query to know what decoding step it is at. By doing so the network is
+            forced to used the positional attention when counting is crucial.
+        query_generator_criterion ({"l05", "l1"}, optional): what type of loss
+            to use for the confusers key generator.
+        confuser_optim ({"adam","sgd","adampre"}, optional): optimizer to use for
+            the discriminator. "adampre" is an optimizer that was designed
+            specifically for Mini Max Games:
+            Stabilizing Adversarial Nets With Prediction Methods.
+        n_steps_discriminate_only (int, optional): Number of steps at the begining
+           where you only train the discriminator.
+        n_steps_interpolate_confuser (int, optional): number of interpolating steps before
+            reaching the `final_factor` and `final_max_scale`.
+        plateau_reduce_lr (list, optional): [patience, factor] If specified, if loss did not improve since `patience` epochs then multiply learning rate by `factor`.
+        [None,None] means no reducing of lr on plateau.
         kwargs:
             Additional arguments to `get_seq2seq_model`.
     """

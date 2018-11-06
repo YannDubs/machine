@@ -1,8 +1,12 @@
-""" A base class for RNN. """
+"""
+A base class for RNN.
+"""
 import torch.nn as nn
 
+from seq2seq.util.base import Module
 
-class BaseRNN(nn.Module):
+
+class BaseRNN(Module):
     r"""
     Applies a multi-layer RNN to an input sequence.
     Note:
