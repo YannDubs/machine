@@ -1,0 +1,48 @@
+{
+	"build_systems":
+	[
+		{
+			"file_regex": "^[ ]*File \"(...*?)\", line ([0-9]*)",
+			"name": "Anaconda Python Builder",
+			"selector": "source.python",
+			"shell_cmd": "\"/Users/yanndubois/venvs/amsterdam/bin/python\" -u \"$file\""
+		}
+	],
+	"folders":
+	[
+		{
+			"folder_include_patterns":
+			[
+				"tasks"
+			],
+			"path": "/Users/yanndubois/Desktop/GitHub/machine-tasks"
+		},
+		{
+			"file_exclude_patterns":
+			[
+				"*.html",
+				"*.ipynb",
+				"*.pyc",
+				"*.egg-info",
+                "Vagrantfile"
+			],
+			"folder_exclude_patterns":
+			[
+				"data",
+				".ipynb_checkpoints",
+				"notebooks",
+				"__pycache__",
+				".DS_Store",
+				".idea",
+				"docs",
+				"scripts"
+			],
+			"path": "."
+		}
+	],
+	"settings":
+	{
+		"python_interpreter": "/Users/yanndubois/venvs/amsterdam/bin/python",
+		"tab_size": 4
+	}
+}

@@ -8,14 +8,24 @@ This is a pytorch implementation of a sequence to sequence learning toolkit for 
 
 # Requirements
 
-This library runs with PyTorch 0.3.0. We refer to the [PyTorch website](http://pytorch.org/) to install the right version for your environment.
+This library runs with PyTorch 0.4.0. We refer to the [PyTorch website](http://pytorch.org/) to install the right version for your environment.
 To install additional requirements (including numpy and torchtext), run:
 
 `pip install -r requirements.txt`
 
 # Quickstart
 
-There are 3 commandline tools available
+To use machine, clone the repository and do an editable install with pip.
+Although machine is compatible with python2.7, we recommend you use python3.
+
+```
+git clone https://github.com/i-machine-think/machine.git $path_to_machine
+pip3 install $path_to_machine
+```
+
+You can then import the classes of the library in your own project.
+For examples of such usage we refer to the [attentive_guidance](https://github.com/i-machine-think/attentive_guidance) and [seq2attn](https://github.com/i-machine-think/seq2attn) project.
+Furthermore, we included 3 commandline tools in the repository that demonstrate the uses of machine:
 
 * `train_model.py`
 * `evaluate.py`
@@ -50,6 +60,7 @@ Once training is complete, you will be prompted to enter a new sequence to trans
     Input:  1 3 5 7 9
 	Expected output: 9 7 5 3 1 EOS
 
+Additional example scripts, as well as different datasets can be found in our auxiliary repository [machine-tasks](https://github.com/i-machine-think/machine-tasks).
 
 ## Checkpoints
 

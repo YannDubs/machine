@@ -3,11 +3,12 @@ import unittest
 
 import torchtext
 
-from seq2seq.evaluator import Predictor
-from seq2seq.dataset import SourceField, TargetField
-from seq2seq.models.seq2seq import Seq2seq
-from seq2seq.models.EncoderRNN import EncoderRNN
-from seq2seq.models.DecoderRNN import DecoderRNN
+from machine.evaluator import Predictor
+from machine.dataset import SourceField, TargetField
+from machine.models.seq2seq import Seq2seq
+from machine.models.EncoderRNN import EncoderRNN
+from machine.models.DecoderRNN import DecoderRNN
+
 
 class TestPredictor(unittest.TestCase):
 
@@ -24,7 +25,8 @@ class TestPredictor(unittest.TestCase):
         trg.build_vocab(dataset)
 
         encoder = EncoderRNN(len(src.vocab), 5, 10, 10, rnn_cell='lstm')
-        decoder = DecoderRNN(len(trg.vocab), 10, 10, trg.sos_id, trg.eos_id, rnn_cell='lstm')
+        decoder = DecoderRNN(len(trg.vocab), 10, 10,
+                             trg.sos_id, trg.eos_id, rnn_cell='lstm')
         seq2seq = Seq2seq(encoder, decoder)
         self.predictor = Predictor(seq2seq, src.vocab, trg.vocab)
 

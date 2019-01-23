@@ -5,8 +5,9 @@ import unittest
 import torch
 import torch.nn.functional as F
 
-from seq2seq.loss.loss import Loss
-from seq2seq.loss import NLLLoss, Perplexity
+from machine.loss.loss import Loss
+from machine.loss import NLLLoss, Perplexity
+
 
 class TestLoss(unittest.TestCase):
     @classmethod
@@ -16,32 +17,57 @@ class TestLoss(unittest.TestCase):
         num_batch = 10
         cls.num_batch = num_batch
         cls.outputs = [F.softmax(torch.randn(batch_size, num_class), dim=1)
+<<<<<<< HEAD
                    for _ in range(num_batch)]
         cls.targets = [torch.LongTensor([random.randint(0, num_class - 1)
                                               for _ in range(batch_size)])
                    for _ in range(num_batch)]
+=======
+                       for _ in range(num_batch)]
+        cls.targets = [torch.LongTensor([random.randint(0, num_class - 1)
+                                         for _ in range(batch_size)])
+                       for _ in range(num_batch)]
+>>>>>>> upstream/master
 
     def test_loss_init(self):
         name = "name"
         shortname = "shortname"
+<<<<<<< HEAD
         inputs="decoder_output"
         targets="decoder_output"
+=======
+        inputs = "decoder_output"
+        targets = "decoder_output"
+>>>>>>> upstream/master
         loss = Loss(name, shortname, inputs, targets, torch.nn.NLLLoss())
         self.assertEqual(loss.name, name)
         self.assertEqual(loss.log_name, shortname)
 
     def test_loss_init_WITH_NON_LOSS(self):
+<<<<<<< HEAD
         self.assertRaises(ValueError, lambda: Loss("name", "shortname", "decoder_outputs", "decoder_targets", "loss"))
 
     def test_loss_backward_WITH_NO_LOSS(self):
         loss = Loss("name", "shortname", "decoder_output", "decoder_output", torch.nn.NLLLoss())
+=======
+        self.assertRaises(ValueError, lambda: Loss("name", "shortname",
+                                                   "decoder_outputs", "decoder_targets", "loss"))
+
+    def test_loss_backward_WITH_NO_LOSS(self):
+        loss = Loss("name", "shortname", "decoder_output",
+                    "decoder_output", torch.nn.NLLLoss())
+>>>>>>> upstream/master
         self.assertRaises(ValueError, lambda: loss.backward())
 
     def test_nllloss_init(self):
         loss = NLLLoss()
         self.assertEqual(loss.name, NLLLoss._NAME)
         self.assertEqual(loss.log_name, NLLLoss._SHORTNAME)
+<<<<<<< HEAD
         self.assertTrue(type(loss.criterion) is torch.nn.NLLLoss)
+=======
+        self.assertTrue(isinstance(loss.criterion, torch.nn.NLLLoss))
+>>>>>>> upstream/master
 
     def test_nllloss(self):
         loss = NLLLoss()

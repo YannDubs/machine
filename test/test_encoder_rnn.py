@@ -1,8 +1,12 @@
-import os
 import unittest
 
 import torch
+<<<<<<< HEAD
 from seq2seq.models.EncoderRNN import EncoderRNN
+=======
+from machine.models.EncoderRNN import EncoderRNN
+
+>>>>>>> upstream/master
 
 class TestEncoderRNN(unittest.TestCase):
 
@@ -45,7 +49,8 @@ class TestEncoderRNN(unittest.TestCase):
     def test_dropout_WITH_NON_ZERO_PROB(self):
         # It's critical to set n_layer=2 here since dropout won't work
         # when the RNN only has one layer according to pytorch's doc
-        rnn = EncoderRNN(self.vocab_size, 10, 50, 16, n_layers=2, dropout_p=0.5)
+        rnn = EncoderRNN(self.vocab_size, 10, 50, 16,
+                         n_layers=2, dropout_p=0.5)
         for param in rnn.parameters():
             param.data.uniform_(-1, 1)
 
